@@ -1,0 +1,81 @@
+universe:
+  index: "SP500"
+  exclude_gics_sectors: [40]  # Financials
+  min_adv_6m: 3_000_000
+  adv_scaling_threshold: 20_000_000
+
+data:
+  price_source: "databento"      # "databento" or "massive" (formerly Polygon.io)
+  databento_dataset: "EQUS.MINI"
+  databento_schema: "ohlcv-1d"
+  fundamental_source: "simfin"
+  start_date: "2023-04-01"      # EQUS.MINI available from 2023-03-28
+  end_date: "2026-04-11"
+  fundamental_pub_lag_days: 90   # conservative look-ahead guard
+
+features:
+  price_reversal:
+    - name: R1W
+      window: 5
+    - name: IREV1W
+      window: 5
+    - name: RSI5D
+      window: 5
+    - name: RSI14
+      window: 14
+  price_momentum:
+    - name: R3M1M
+      lookback: 63
+      skip: 21
+    - name: R12M1M
+      lookback: 252
+      skip: 21
+  low_risk:
+    - name: VOL6M
+      window: 126
+    - name: BETA6M
+      window: 126
+  value:
+    - name: PE
+    - name: PB
+  profitability:
+    - name: ROE
+    - name: GPOA
+
+neutralization:
+  winsorize_lower: 0.02
+  winsorize_upper: 0.98
+  zscore_iterations: 10
+  industry_level: "gics_industry"  # subtract industry median
+
+target:
+  horizon: "1W"
+  day: "Wednesday"
+  zscore_cross_sectional: true
+
+model:
+  type: "xgboost"
+  params:
+    max_depth: 4
+    learning_rate: 0.03
+    n_estimators: 2000
+    subsample: 0.7
+    colsample_bytree: 0.7
+    objective: "reg:squarederror"
+    tree_method: "hist"
+  early_stopping_rounds: 50
+  train_weeks: 78        # ~1.5 years
+  val_weeks: 26          # ~6 months
+  retrain_freq: 12       # retrain every 12 weeks
+
+backtest:
+  rebalance_day: "Wednesday"
+  long_quintile: 5
+  short_quintile: 1
+  weighting: "equal"
+  trading_cost_bps: 1.5
+  execution_lag_days: 1
+
+diagnostics:
+  alpha_decay_lags: [0, 1, 2, 3, 4]
+  weekday_signals: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
