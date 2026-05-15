@@ -4,46 +4,57 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ML-based short-horizon equity reversion strategy, replicating and extending the approach from Societe Generale's research on machine learning for weekly mean reversion in developed markets. The model predicts forward 1-week stock returns (Wednesday close to Wednesday close) using gradient boosted trees (XGBoost/LightGBM) with SHAP-based interpretability.
+ML-based short-horizon equity reversion strategy, replicating and extending the approach from Societe Generale's research on machine learning for weekly mean reversion in developed markets. The model predicts forward 1-week stock returns (Wednesday close to Wednesday close) using an ensemble of XGBoost, LightGBM, RandomForest, and MLP, with SHAP-based interpretability per ensemble member.
 
 **Core hypothesis**: ML models naturally discover that short-term price reversal (R1W) and earnings momentum (EPS revisions) are the dominant drivers of weekly alpha.
+
+**Source paper**: `ML_Mean_Reversion.pdf` (SG Cross Asset Research, 2 Apr 2025).
+**Spec**: see [`.specify/README.md`](.specify/README.md) for the full breakdown of objective, requirements, procedures, constraints, expected outputs, planned Streamlit app, and the prioritized implementation plan with paper-vs-code gaps called out.
 
 ## Architecture
 
 ```
 data/           — raw and processed data caches
 src/
-  data/         — data acquisition (Databento for prices, simfin for fundamentals, optionally WRDS/IBES)
-  features/     — factor computation and neutralization pipeline
-  model/        — training loop with rolling window, hyperparameter tuning
-  backtest/     — portfolio construction, rebalancing, cost model
-  diagnostics/  — SHAP analysis, alpha decay, weekday effects
-notebooks/      — exploratory analysis and result visualization
+  data/         — data acquisition (FMP for prices/fundamentals/grades/macro, Databento for high-freq prices, simfin legacy)
+  features/     — factor computation, neutralization pipeline, HMM macro regimes
+  model/        — rolling-window ensemble training (xgb / lgbm / rf / mlp)
+  backtest/     — portfolio construction, ADV-scaled basket weights, cost model, R1W baseline
+  diagnostics/  — SHAP fan-out, alpha decay, weekday effect
+  reporting/    — multi-agent (briefing → critique → synthesize) report generation
+app/            — Streamlit viewer (7 pages: overview, predictions, SHAP, alpha decay, weekday, param explorer, report)
+notebooks/      — exploratory analysis; figures/ holds the persisted SHAP PNGs
 configs/        — YAML configs for universe, model params, backtest settings
 tests/          — unit and integration tests
 ```
 
 ## Key Design Decisions
 
-- **Universe**: S&P 500 (or Russell 1000), excluding GICS sector 40 (financials), minimum $3M 6-month rolling ADV
+- **Universe**: multi-region — US S&P 500 (point-in-time via FMP, back to 1957), UK FTSE 100, CA TSX 60 (current-snapshot only on FMP; survivorship-biased — accepted limitation). Financials excluded. Per-region ADV thresholds in native currency (USD / GBp / CAD).
 - **Rebalance cadence**: Weekly on Wednesdays
-- **Rolling window**: 520-week train / 104-week validation / 1-week test, retrain every 12 weeks
-- **Neutralization**: Winsorize 2%/98%, iterative z-score (10x), subtract GICS industry median — this step is critical and must precede model training
+- **Rolling window**: paper uses 520-week train / 104-week validation / 1-week test, retrain every 12 weeks. Current `configs/default.yaml` uses **78 / 26 / 1** as a held-over Phase-1 default; the data now spans 2008-2026 so the paper window fits — bump tracked in `.specify/007-implementation-plan.md` task H.10.
+- **Neutralization**: cross-sectional per (date, factor) — winsorize 2%/98% → iterative z-score (10x) → cap at ±3 → subtract industry median → drop tickers with >10 missing factors and zero-fill the rest. Wired via `neutralize_stacked` in `src/main.py`. Macro/regime columns bypass the cross-section as passthrough (would otherwise collapse to NaN with std=0 across the cross-section).
 - **Target**: Cross-sectionally z-scored forward 1-week returns
-- **Cost model**: 1.5 bps per side, 1-day execution lag, ADV-based position scaling (threshold $20M)
+- **Cost model**: 1.5 bps per side, 1-day execution lag (enforced — `main.py` refuses lag<1), ADV-based position scaling (`min(1, ADV/threshold)` then renormalize), per-region thresholds.
 
 ## Factor Groups
 
+Currently 24 factors live in the model (vs paper's 86):
+
 | Group | Factors | Data Source |
 |---|---|---|
-| Price Reversals | R1W, IREV1W, RSI5D, RSI14 | Price data (Databento or Massive) |
-| Price Momentum | R3M1M, R12M1M | Price data (Databento or Massive) |
-| Earnings Momentum | UPDOWN1W, SUE1W | IBES/FMP (if available) |
-| Low Risk | VOL6M, BETA6M | Price data |
-| Value | PE, PB | Fundamentals (simfin) |
-| Profitability | ROE, GPOA | Fundamentals (simfin) |
+| Price Reversals | R1W, IREV1W (beta-adjusted residual), RSI5D, RSI14, RSI30 | FMP / Databento prices |
+| Price Momentum | R1M, R3M1M, R6M1M, R12M1M | FMP / Databento prices |
+| Low Risk | VOL6M, VOL12M, BETA6M | FMP / Databento prices + market index |
+| Value | PE, PB, EVEBIT, EVEBITDA, EVSALES | SimFin / FMP fundamentals |
+| Profitability / Quality | ROE, ROA, GPOA, OPRDIC, GBROC, DE, ACCRUALS, SALES_GROWTH_YOY | SimFin / FMP fundamentals |
+| Analyst (UPDOWN1W proxy) | UPDOWN1W_RATINGS | FMP `/grades` (rating-change events, *not* EPS-revision counts) |
+| Macro / Regime (passthrough) | macro returns + HMM-regime posteriors | FMP series + fitted HMM in `src/features/regime.py` |
 
-Start with price-based factors only; add earnings revision data once the pipeline is validated.
+**Gap vs paper**: true UPDOWN1W (EPS-estimate-revision count) and SUE1W/3/6 are
+absent — gated on an IBES / Refinitiv / FMP-estimates sourcing decision (see
+`.specify/007-implementation-plan.md` block E). The FMP `/grades` proxy is named
+`UPDOWN1W_RATINGS` to keep the SHAP comparison against the paper honest.
 
 ## Build and Run Commands
 
@@ -52,23 +63,24 @@ Start with price-based factors only; add earnings revision data once the pipelin
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# API key for price data (one of these, depending on price_source in config)
-export DATABENTO_API_KEY="db-..."        # for price_source: databento
-export MASSIVE_API_KEY="..."             # for price_source: massive (formerly Polygon.io)
+# API keys — FMP is the primary source. .env at repo root is loaded automatically.
+export FMP_API_KEY="..."
+export DATABENTO_API_KEY="db-..."        # optional, for price_source: databento
+export ANTHROPIC_API_KEY="sk-ant-..."    # reporting layer (briefing/critique/synthesize)
+export OPENAI_API_KEY="sk-..."           # alternative provider for reporting
 
-# Run full pipeline
+# Run full pipeline (data → features → ensemble → backtest → SHAP → diagnostics → save)
 python -m src.main
 
-# Run individual phases
-python -m src.data.fetch          # data acquisition
-python -m src.features.build      # feature engineering
-python -m src.model.train         # model training
-python -m src.backtest.run        # backtesting
-python -m src.diagnostics.shap_analysis  # SHAP plots
+# Streamlit viewer over the cached parquet outputs
+streamlit run app/streamlit_app.py
+
+# Multi-agent report from the latest run's artifacts
+python -m src.reporting.run_report --profile cheap
 
 # Tests
 pytest tests/
-pytest tests/test_features.py -k "test_neutralization"  # single test
+pytest tests/test_neutralization_stacked.py  # single test
 ```
 
 ## Critical Implementation Notes
@@ -79,15 +91,20 @@ pytest tests/test_features.py -k "test_neutralization"  # single test
 - **Neutralization ordering**: Winsorize -> z-score (iterate 10x) -> industry neutralize. Skipping this produces a model that learns sector bets, not stock-level alpha
 - **Wednesday-to-Wednesday returns**: The target variable and rebalancing both key off Wednesday closes specifically
 
-## Validation Checklist
+## Validation Checklist (paper's predictions vs current results)
 
-- R1W should emerge as the top SHAP feature organically
-- 7-day EPS revision should rank second (if earnings data available)
-- Alpha decay test: plot annualized IR vs 0-4 day execution lags
-- Weekday effect: Thursday signals should outperform Monday signals
-- Quintile spread: monotonic returns from Q1 (short) to Q5 (long)
-- Compare ML model vs R1W-only baseline vs earnings-filtered reversal baseline
+Paper claims to verify; current state in parentheses:
+
+- R1W should emerge as the top SHAP feature organically — **not confirmed** (currently #4; VOL12M and VOL6M lead)
+- 7-day EPS revision should rank second — **untestable** (true UPDOWN1W not yet sourced; the FMP-grades proxy `UPDOWN1W_RATINGS` ranks #23)
+- Alpha decay test: plot annualized IR vs 0-4 day execution lags — **confirmed** (monotone 12.7% → 4.7%)
+- Weekday effect: Thursday signals should outperform Monday signals — **confirmed and stronger** (monotone Mon→Fri ramp, 22% → 35%)
+- Quintile spread: monotonic returns from Q1 (short) to Q5 (long) — TODO surface in Streamlit
+- Compare ML model vs R1W-only baseline — done (ensemble IR 1.00 vs baseline ~1.10; ML's edge is in turnover/drawdown, not return)
+- vs earnings-filtered reversal baseline — gated on Phase 2 UPDOWN1W
 
 ## Backtest Scope
 
-Start with a simplified version: US-only (S&P 500), 2019-2024 (5-year window covering SG's live period), 10-15 factors. Expand to full 86-factor cross-regional implementation only after core findings are validated.
+Phase 1 (shipped 2026-05-15): multi-region US/UK/CA (S&P 500 ex-financials PIT, FTSE 100 + TSX 60 snapshot), 2008-01-30 → 2026-05-13 (955 weeks), 24 factors, ensemble of XGB + LGB + RF + MLP. Ensemble IR (net of 1.5 bps/side, 1-day lag) = 1.00; best member (RF) = 1.13; paper net Global L/S IR = 1.6. R1W reversal baseline IR ≈ 1.10. See [`.specify/007-implementation-plan.md`](.specify/007-implementation-plan.md) for the full results table.
+
+Phase 2 priorities (ordered by expected information value): true UPDOWN1W from IBES/Refinitiv/FMP-estimates → region × industry quintile peer grouping → factor expansion toward 86 → 520/104 train/val window → EU + JP regions. See [`.specify/001-overview.md`](.specify/001-overview.md) for phase boundaries and [`.specify/007-implementation-plan.md`](.specify/007-implementation-plan.md) for the ordered work list.
