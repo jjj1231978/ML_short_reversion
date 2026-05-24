@@ -4,7 +4,7 @@ This directory documents the research objective, requirements, procedures, const
 expected outputs, the planned Streamlit visualization, and the implementation
 roadmap for the project.
 
-Source paper: [`../ML_Mean_Reversion.pdf`](../ML_Mean_Reversion.pdf) — Société Générale,
+Source paper: [`../ML_Mean_Reversion.pdf`](../ML_Mean_Reversion.pdf) — industry research,
 "Can ML help us design a better stock mean reversion strategy?", 2 April 2025.
 
 Read in this order:

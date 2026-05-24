@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ML-based short-horizon equity reversion strategy, replicating and extending the approach from Societe Generale's research on machine learning for weekly mean reversion in developed markets. The model predicts forward 1-week stock returns (Wednesday close to Wednesday close) using an ensemble of XGBoost, LightGBM, RandomForest, and MLP, with SHAP-based interpretability per ensemble member.
+ML-based short-horizon equity reversion strategy, replicating and extending the approach from industry research on machine learning for weekly mean reversion in developed markets. The model predicts forward 1-week stock returns (Wednesday close to Wednesday close) using an ensemble of XGBoost, LightGBM, RandomForest, and MLP, with SHAP-based interpretability per ensemble member.
 
 **Core hypothesis**: ML models naturally discover that short-term price reversal (R1W) and earnings momentum (EPS revisions) are the dominant drivers of weekly alpha.
 
-**Source paper**: `ML_Mean_Reversion.pdf` (SG Cross Asset Research, 2 Apr 2025).
+**Source paper**: `ML_Mean_Reversion.pdf` (industry research, 2 Apr 2025).
 **Spec**: see [`.specify/README.md`](.specify/README.md) for the full breakdown of objective, requirements, procedures, constraints, expected outputs, planned Streamlit app, and the prioritized implementation plan with paper-vs-code gaps called out.
 
 ## Architecture

@@ -3,7 +3,7 @@
 ## Why
 
 Short-horizon mean reversion in equities is well documented but hard to monetize: high
-turnover and fast alpha decay eat the gross signal. Société Générale's April 2025 paper
+turnover and fast alpha decay eat the gross signal. Industry research from April 2025
 ("Can ML help us design a better stock mean reversion strategy?") shows that a
 gradient-boosted-trees model — given an unconstrained library of ~86 cross-sectional
 factors — naturally rediscovers reversal as the dominant weekly signal, but with
@@ -16,7 +16,7 @@ This project replicates and extends that work in our own infrastructure so we ca
 - Verify the headline findings on independently sourced data.
 - Use it as a research substrate for adding new factors / different tree models /
   alternative target horizons.
-- Maintain a permanent ML-research codebase that doesn't depend on SG's paywalled
+- Maintain a permanent ML-research codebase that doesn't depend on the vendor's paywalled
   Quant Data API.
 
 ## Core hypothesis

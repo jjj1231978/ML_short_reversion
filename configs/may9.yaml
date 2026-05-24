@@ -1,0 +1,158 @@
+# May-9 baseline replay on the FIXED code path.
+#
+# Goal: apples-to-apples comparison vs the May-9 final.md report (IR=1.11),
+# now that the _to_daily multi-ticker fundamentals bug, the pd.NA dtype
+# contamination, the macro/HMM passthrough NaN, and the UPDOWN1W_RATINGS
+# all-NaN-on-quiet-weeks issues have been fixed.
+#
+# Differences vs configs/default.yaml:
+#   * features.whitelist     — restrict feature matrix to the 13 columns
+#                              May-9 used (Phase-1 paper factors only).
+#   * model.train_weeks=78,  val_weeks=26  — May-9 windows (vs default 260/52).
+#   * model.ensemble.members — drop MLP, keep XGB+LGB+RF (May-9 had 3 trees).
+#   * macro.enabled: false   — May-9 had macro/HMM on, but those passthroughs
+#                              corrupted the universe (diagnosed this session).
+#                              Disabled so we read REAL alpha on May-9's
+#                              factors, not the passthrough-NaN artifact.
+
+universe:
+  index: "SP500"
+  regions: ["US", "UK", "CA"]
+  indexes:
+    US: "SP500"
+    UK: "FTSE100"
+    CA: "TSX60"
+  exclude_gics_sectors: [40]
+  exclude_sectors: ["Financial Services"]
+  min_adv_6m: 3_000_000
+  adv_scaling_threshold: 20_000_000
+  min_adv_6m_by_region:
+    US: 3_000_000
+    UK: 5_000_000
+    CA: 100_000
+  min_price_by_region:
+    US: 3.0
+    UK: 100.0
+    CA: 3.0
+  adv_scaling_threshold_by_region:
+    US: 20_000_000
+    UK: 50_000_000
+    CA: 750_000
+
+data:
+  price_source: "fmp"
+  fundamental_source: "fmp"
+  universe_source: "fmp"
+  databento_dataset: "EQUS.MINI"
+  databento_schema: "ohlcv-1d"
+  databento_cache_dir: "~/data_lake/databento/equities"
+  massive_cache_dir: "~/data_lake/massive"
+  simfin_cache_dir: "~/data_lake/simfin"
+  fmp_cache_dir: "~/data_lake/fmp"
+  fmp_rate_limit_per_min: 280
+  fmp_history_start: "2006-01-01"
+  start_date: "2006-01-01"
+  end_date: "2026-04-11"
+  fundamental_pub_lag_days: 90
+  benchmarks:
+    US: "^GSPC"
+    UK: "^FTSE"
+    CA: "XIU.TO"
+
+features:
+  # The May-9 13-factor whitelist. build_feature_matrix computes the full
+  # matrix and then filters down to these columns. Order does not matter.
+  whitelist:
+    - R1W
+    - IREV1W
+    - RSI5D
+    - RSI14
+    - R3M1M
+    - R12M1M
+    - VOL6M
+    - BETA6M
+    - PE
+    - PB
+    - ROE
+    - GPOA
+    - UPDOWN1W_RATINGS
+
+neutralization:
+  winsorize_lower: 0.02
+  winsorize_upper: 0.98
+  zscore_iterations: 10
+  zscore_cap: 3.0
+  max_missing_factors: 10
+  industry_level: "gics_sub_industry"
+
+macro:
+  enabled: false   # passthrough HMM/macro broke the universe — kept off
+
+target:
+  horizon: "1W"
+  day: "Wednesday"
+  zscore_cross_sectional: true
+
+model:
+  type: "ensemble"
+  ensemble:
+    members: ["xgboost", "lightgbm", "random_forest"]  # 3 trees, May-9 config
+    combine: "rank_mean"
+  train_weeks: 78        # May-9 windows
+  val_weeks: 26
+  retrain_freq: 12
+  xgboost:
+    params:
+      max_depth: 4
+      learning_rate: 0.03
+      n_estimators: 2000
+      subsample: 0.7
+      colsample_bytree: 0.7
+      objective: "reg:squarederror"
+      tree_method: "hist"
+    early_stopping_rounds: 50
+  lightgbm:
+    params:
+      objective: "regression"
+      num_leaves: 31
+      max_depth: -1
+      learning_rate: 0.03
+      n_estimators: 2000
+      subsample: 0.7
+      subsample_freq: 1
+      colsample_bytree: 0.7
+      verbose: -1
+    early_stopping_rounds: 50
+  random_forest:
+    params:
+      n_estimators: 400
+      max_depth: 8
+      min_samples_leaf: 50
+      max_features: 0.7
+      n_jobs: -1
+      random_state: 42
+
+backtest:
+  rebalance_day: "Wednesday"
+  long_quintile: 5
+  short_quintile: 1
+  weighting: "equal"
+  trading_cost_bps: 1.5
+  execution_lag_days: 1
+  weekly_return_cap: 0.30
+
+diagnostics:
+  alpha_decay_lags: [0, 1, 2, 3, 4]
+  weekday_signals: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+  run_weekday_effect: false
+  shap_test_weeks: 26
+
+reporting:
+  profile: "cheap"
+  briefing_model: null
+  critique_model: null
+  synth_model: null
+  rounds: 1
+  max_budget_usd: 0.30
+  prompt_caching: true
+  output_dir: "data/processed/reports"

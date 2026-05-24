@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from src.config import RAW_DIR, load_config
+from src.config import load_config
 from src.data.fetch import fetch_price_data, fetch_fundamentals_simfin
 from src.data.universe import get_sp500_constituents, filter_by_gics_sector
 from src.features.build import build_feature_matrix, build_target, resample_to_wednesday

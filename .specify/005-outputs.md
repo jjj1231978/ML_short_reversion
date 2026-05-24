@@ -152,13 +152,13 @@ audience.
 - Alpha-decay table.
 - Weekday-effect table (if available).
 - Per-quintile annualized return.
-- Comparison reference values from the SG paper (paper-Phase-1 deltas).
+- Comparison reference values from the industry research paper (paper-Phase-1 deltas).
 - Pointer to known limitations (forwarded from [`004-constraints.md`](004-constraints.md)).
 
 **Output**: `draft.md`, target length **5-6 pages (~2500-3500 words)**, with the canonical section structure:
 
 1. **Executive summary** (~150 words) — 3-5 bullets, headline IR + surprising finding + caveat + hypothesis read.
-2. **Motivation** (~300 words) — why short-term equity reversion + why ML + what the SG paper claims.
+2. **Motivation** (~300 words) — why short-term equity reversion + why ML + what the industry research paper claims.
 3. **Objective** (~250 words) — what the run is trying to test (the validation checklist from `004`).
 4. **Data** (~350 words) — universe, window, source, filters, factor count vs. paper's 86.
 5. **Methodology** (~500 words) — feature pipeline, neutralization recipe, model + windows, portfolio + costs; explicit on spec gaps.

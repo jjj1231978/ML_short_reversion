@@ -1,52 +1,214 @@
 universe:
-  index: "SP500"
-  exclude_gics_sectors: [40]  # Financials
-  min_adv_6m: 3_000_000
-  adv_scaling_threshold: 20_000_000
+  index: "SP500"                       # legacy — Phase 1 single-region
+  regions: ["US", "UK", "CA"]          # multi-region per Phase 2 plan
+  indexes:                             # one per region (FMP membership lookups)
+    US: "SP500"
+    UK: "FTSE100"
+    CA: "TSX60"
+  exclude_gics_sectors: [40]  # Financials (legacy; FMP path uses exclude_sectors below)
+  exclude_sectors: ["Financial Services"]   # FMP profile sector vocabulary
+  min_adv_6m: 3_000_000                # legacy scalar fallback (US)
+  adv_scaling_threshold: 20_000_000    # legacy scalar fallback (US)
+  # Per-region thresholds in NATIVE currency (UK is GBp pence, not £).
+  # Calibrated empirically to retain ~95% of each region's index members;
+  # not USD-comparable across regions. FTSE100/TSX60 are already large-cap
+  # indexes by construction, so the ADV filter is intentionally light there.
+  min_adv_6m_by_region:
+    US: 3_000_000        # USD
+    UK: 5_000_000        # GBp pence (≈ £50k/day)
+    CA: 100_000          # CAD (≈ $74k USD/day)
+  # Per-region per-week price floor: drops ticker-weeks below threshold.
+  # Filters penny-stock reflation moonshots (e.g., 2009-04 had post-GFC
+  # survivors bouncing 100-1000% in a week, blowing up the L/S basket).
+  min_price_by_region:
+    US: 3.0              # USD
+    UK: 100.0            # GBp pence (= £1)
+    CA: 3.0              # CAD
+  adv_scaling_threshold_by_region:
+    US: 20_000_000       # USD
+    UK: 50_000_000       # GBp pence
+    CA: 750_000          # CAD
 
 data:
-  price_source: "databento"      # "databento" or "massive" (formerly Polygon.io)
+  price_source: "fmp"            # "databento" | "massive" | "fmp"
+  fundamental_source: "fmp"      # "simfin" | "fmp"
+  universe_source: "fmp"         # "wikipedia" | "fmp"
+  # Legacy (Phase 1 sources, kept for back-compat / fallback)
   databento_dataset: "EQUS.MINI"
   databento_schema: "ohlcv-1d"
-  fundamental_source: "simfin"
-  start_date: "2023-04-01"      # EQUS.MINI available from 2023-03-28
+  databento_cache_dir: "~/data_lake/databento/equities"
+  massive_cache_dir: "~/data_lake/massive"
+  simfin_cache_dir: "~/data_lake/simfin"
+  # FMP — primary for Phase 2
+  fmp_cache_dir: "~/data_lake/fmp"
+  fmp_rate_limit_per_min: 280    # Conservative for FMP Premium (300/min); raise to 700 if Ultimate
+  fmp_history_start: "2006-01-01" # paper window start
+  start_date: "2006-01-01"       # was 2023-04-01 — extended for paper-window backfill
   end_date: "2026-04-11"
   fundamental_pub_lag_days: 90   # conservative look-ahead guard
+  benchmarks:
+    US: "^GSPC"
+    UK: "^FTSE"
+    CA: "XIU.TO"     # iShares S&P/TSX 60 ETF — proxy for ^GSPTSE which is gated on this FMP plan (HTTP 402)
 
 features:
+  # Descriptive listing only — the actual factor wiring lives in
+  # src/features/build.py:build_feature_matrix and
+  # src/data/fmp.py:_compute_fundamental_ratios. Update both when adding factors.
   price_reversal:
     - name: R1W
       window: 5
-    - name: IREV1W
+    - name: IREV1W           # 1-week beta-adjusted residual return
       window: 5
+    - name: IREV1M           # 1-month beta-adjusted residual return
+      window: 21
+    - name: IREVVOL1W        # IREV1W / IVOL6M (risk-adjusted reversal)
+    - name: IREVVOL1M        # IREV1M / IVOL6M
     - name: RSI5D
       window: 5
     - name: RSI14
       window: 14
+    - name: RSI30
+      window: 30
   price_momentum:
+    - name: R1M
+      lookback: 21
+      skip: 0
     - name: R3M1M
       lookback: 63
+      skip: 21
+    - name: R6M1M
+      lookback: 126
       skip: 21
     - name: R12M1M
       lookback: 252
       skip: 21
+    - name: IMOM3M1M         # 3M residual return lagged 1M
+    - name: IMOM12M1M        # 12M residual return lagged 1M
+    - name: IMOMVOL3M1M      # IMOM3M1M / IVOL6M
+    - name: IMOMVOL12M1M     # IMOM12M1M / IVOL12M
   low_risk:
     - name: VOL6M
       window: 126
+    - name: VOL12M
+      window: 252
+    - name: DOWNVOL6M        # semi-deviation, left-tail risk
+      window: 126
     - name: BETA6M
       window: 126
+    - name: BETA12M
+      window: 252
+    - name: IVOL6M           # idiosyncratic vol (residual stdev)
+      window: 126
+    - name: IVOL12M
+      window: 252
+    - name: SIZE             # ln(market cap) — paper Low Risk group
   value:
     - name: PE
     - name: PB
+    - name: PSALES           # TTM Sales / Mkt Cap
+    - name: POCF             # TTM OCF / Mkt Cap
+    - name: PFCF             # TTM FCF / Mkt Cap
+    - name: EVSALES          # TTM Sales / EV
+    - name: EVEBIT           # TTM EBIT / EV
+    - name: EVEBITDA         # TTM EBITDA / EV
+    - name: EVOCF            # TTM OCF / EV
+    - name: EVFCF            # TTM FCF / EV
+    - name: PTB              # (Equity − Intangibles) / Mkt Cap
   profitability:
     - name: ROE
     - name: GPOA
+    - name: ROA              # TTM NI / Assets
+    - name: GROSSMARGIN      # TTM GrossProfit / Sales
+    - name: ROIC             # TTM NI / (Equity + LT Debt)
+    - name: OPRDA            # (TTM EBITDA + R&D) / Assets
+    - name: OPRDIC           # (TTM EBITDA + R&D) / Cap Invested
+    - name: FCFROIC          # TTM FCF / Cap Invested
+    - name: GBROC            # Greenblatt: EBIT / (PPE + NWC)
+  leverage:
+    - name: DE               # totalDebt / totalEquity
+    - name: NDE              # (totalDebt - cash) / totalEquity
+    - name: EBIT_COVER       # TTM EBIT / TTM Interest Expense
+    - name: DEBITDA          # Total Debt / TTM EBITDA
+    - name: LTDE             # LT Debt / Equity
+    - name: LTDEBITDA        # LT Debt / TTM EBITDA
+    - name: NDEBITDA         # Net Debt / TTM EBITDA
+  growth:
+    - name: SALES_GROWTH_YOY # revenue YoY pct change (4q look-back)
+  earnings_quality:
+    - name: ACCRUALS         # Sloan-style: Δworking capital / total assets
+  capital_allocation:        # Tier-2 (FMP cashflow path)
+    - name: CAPEXPPE         # TTM CAPEX / Net PPE
+    - name: STKP             # TTM Net Stock Issuance / Mkt Cap
 
 neutralization:
   winsorize_lower: 0.02
   winsorize_upper: 0.98
   zscore_iterations: 10
-  industry_level: "gics_industry"  # subtract industry median
+  zscore_cap: 3.0                     # paper p.13: cap z-scores at +/-3
+  max_missing_factors: 10              # drop tickers with > N missing factors per week
+  industry_level: "gics_sub_industry"  # peer group for median subtraction
+
+macro:
+  # Disabled: the 24 passthrough macro/HMM columns were dropping ~85% of weeks
+  # to NaN in train.py's dropna, gutting universe coverage. Paper has zero
+  # macro/regime factors — every paper factor is stock-level. Re-enable only
+  # after train.py handles passthrough NaN explicitly (fillna 0) instead of
+  # dropping rows.
+  enabled: false
+  # Logical name -> FMP symbol. Override any entry if your FMP plan gates the
+  # default symbol (e.g., yield indexes ^TNX/^IRX may require Premium).
+  symbols:
+    SPX: "^GSPC"
+    NDX: "^NDX"
+    RUT: "^RUT"
+    VIX: "^VIX"
+    US10Y: "^TNX"
+    US30Y: "^TYX"
+    US3M: "^IRX"
+    OIL: "CLUSD"
+    GOLD: "GCUSD"
+    COPPER: "HGUSD"
+    DXY: "DX-Y.NYB"
+    EURUSD: "EURUSD"
+    USDJPY: "USDJPY"
+
+  # (a) Per-stock rolling betas — cross-sectional, normal neutralization.
+  beta_macros: ["OIL", "DXY", "US10Y", "VIX"]
+  beta_window: 126
+
+  # (b) Threshold regime flags — broadcast (passthrough). Cheap baseline
+  #     for the HMM comparison.
+  flag_macros: ["VIX", "US10Y", "DXY", "OIL"]
+  flag_window: 126
+  flag_threshold: 1.0   # z-score cutoff for the HI flag
+
+  # (c) Raw broadcast macro changes/returns — passthrough.
+  raw:
+    VIX: "changes"
+    US10Y: "changes"
+    OIL: "returns"
+    DXY: "returns"
+    SPX: "returns"
+    GOLD: "returns"
+  raw_periods: 5         # business days (~1 week)
+
+  # HMM regime posteriors — cached to data/processed/macro_regimes.parquet.
+  # The cache is reloaded across runs; set hmm_refit: true to regenerate.
+  hmm_enabled: true
+  hmm_states: 2                    # per-macro 2-state Gaussian HMM (calm vs stress)
+  hmm_fit_mode: "walk_forward"     # causal — refits every hmm_refit_every obs on the
+                                   # expanding window, no future info ever used.
+                                   # "full" is also accepted for diagnostics but
+                                   # leaks future info into past state definitions.
+  hmm_refit_every: 60              # walk-forward refit cadence in business days (~3 months)
+  hmm_min_obs: 252                 # warmup window before any decoding (~1 year).
+                                   # Warmup-period rows are emitted as NaN, not
+                                   # in-sample posteriors, to keep the series
+                                   # strictly causal end-to-end.
+  hmm_iter: 200
+  hmm_seed: 42
+  hmm_refit: false
 
 target:
   horizon: "1W"
@@ -54,19 +216,72 @@ target:
   zscore_cross_sectional: true
 
 model:
-  type: "xgboost"
-  params:
-    max_depth: 4
-    learning_rate: 0.03
-    n_estimators: 2000
-    subsample: 0.7
-    colsample_bytree: 0.7
-    objective: "reg:squarederror"
-    tree_method: "hist"
-  early_stopping_rounds: 50
-  train_weeks: 78        # ~1.5 years
-  val_weeks: 26          # ~6 months
-  retrain_freq: 12       # retrain every 12 weeks
+  # type controls what gets returned by rolling_train_predict / written as the
+  # headline predictions.parquet. With "ensemble", all members in
+  # ensemble.members are trained at every retrain step and combined via
+  # ensemble.combine. With a bare member name, only that member runs (back-compat).
+  type: "ensemble"        # ensemble | xgboost | lightgbm | random_forest
+  ensemble:
+    members: ["xgboost", "lightgbm", "random_forest", "mlp"]
+    combine: "rank_mean"  # rank_mean | mean — see src/model/ensemble.py
+  # Walk-forward windows shared across all members.
+  # 260/52 chosen for the FMP-history Phase-2 run: 5y train, 1y val. Previous
+  # 78/26 was forced by Databento's 2023+ history and produced 5-8k rows per
+  # train window, undertrained against the 48-column feature matrix. With
+  # FMP back to 2006-01-01 we have room for a paper-style window — first
+  # predictable week is ~2014 (warmup + 260+52 weeks), leaving ~12y OOS.
+  train_weeks: 260        # ~5 years
+  val_weeks: 52           # ~1 year
+  retrain_freq: 12        # retrain every 12 weeks
+  # Per-member hyperparameters.
+  xgboost:
+    params:
+      max_depth: 4
+      learning_rate: 0.03
+      n_estimators: 2000
+      subsample: 0.7
+      colsample_bytree: 0.7
+      objective: "reg:squarederror"
+      tree_method: "hist"
+    early_stopping_rounds: 50
+  lightgbm:
+    params:
+      objective: "regression"
+      num_leaves: 31
+      max_depth: -1
+      learning_rate: 0.03
+      n_estimators: 2000
+      subsample: 0.7
+      subsample_freq: 1     # required for subsample to take effect
+      colsample_bytree: 0.7
+      verbose: -1
+    early_stopping_rounds: 50
+  random_forest:
+    # No early stopping — train on combined train+val for more data.
+    params:
+      n_estimators: 400
+      max_depth: 8
+      min_samples_leaf: 50
+      max_features: 0.7
+      n_jobs: -1
+      random_state: 42
+  mlp:
+    # PyTorch MLP member. See src/model/mlp.py:MLPConfig for full schema.
+    # Train/val/test windows are shared with the other members above. Early
+    # stopping is on val MSE; scaling is fit on train rows only.
+    params:
+      hidden_dims: [64, 32]     # smaller net for CPU runs; was [128, 64, 32]
+      dropout: 0.2
+      batchnorm: true
+      lr: 0.001
+      weight_decay: 0.00001
+      batch_size: 512           # bigger batches → fewer iters/epoch on CPU; was 256
+      max_epochs: 100           # most fits early-stop by epoch ~30; was 200
+      early_stopping_patience: 10  # was 15
+      grad_clip: 1.0
+      activation: "relu"        # relu | gelu | tanh
+      device: null              # null = auto (cuda if available)
+      seed: 42
 
 backtest:
   rebalance_day: "Wednesday"
@@ -75,7 +290,24 @@ backtest:
   weighting: "equal"
   trading_cost_bps: 1.5
   execution_lag_days: 1
+  # Defensive backstop: cap individual stock weekly returns before forming
+  # baskets. Combined with the per-region price floor, prevents tail-event
+  # blowups (e.g., 2009-04 reflation, name-specific buyout pops). Set to null
+  # to disable.
+  weekly_return_cap: 0.30
 
 diagnostics:
   alpha_decay_lags: [0, 1, 2, 3, 4]
   weekday_signals: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+  run_weekday_effect: false    # set false to skip the 5x retrain (~5-10 min)
+  shap_test_weeks: 26          # how many recent weeks to feed into SHAP (denser beeswarm matches paper p.7)
+
+reporting:
+  profile: "cheap"            # cheap | cheap-openai | mixed | quality | quality-openai
+  briefing_model: null        # null = use profile default; otherwise explicit model id
+  critique_model: null
+  synth_model: null
+  rounds: 1                   # extra critique→synthesis iterations (1 = single pass)
+  max_budget_usd: 0.30        # abort if estimated total spend exceeds; quality profile needs ~1.50
+  prompt_caching: true        # Anthropic-only optimization; ignored for OpenAI
+  output_dir: "data/processed/reports"
