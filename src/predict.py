@@ -199,12 +199,18 @@ def _build_features_and_close(
 
     benchmarks = cfg["data"].get("benchmarks", {})
     market_ticker = benchmarks.get("US", "SPY") if price_source == "fmp" else "SPY"
+    # The benchmark is a single symbol; fetch_market_close does NOT accept
+    # `skip_fetch` (that's an equity-path kwarg), and a cache-aware single-symbol
+    # fetch is cheap regardless. Drop skip_fetch so the market series still loads
+    # under --no-refresh-prices — otherwise BETA6M / IREV1W (beta-adjusted
+    # residual reversal) silently zero out.
+    market_kwargs = {k: v for k, v in price_kwargs.items() if k != "skip_fetch"}
     try:
         market_close = fetch_market_close(
             market_ticker,
             start=cfg["data"]["start_date"],
             end=cfg["data"]["end_date"],
-            **price_kwargs,
+            **market_kwargs,
         )
     except Exception as e:
         log.warning(f"Market close fetch failed: {e}")
