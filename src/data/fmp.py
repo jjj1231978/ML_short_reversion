@@ -686,6 +686,58 @@ def fetch_market_close_fmp(
     return s
 
 
+def fetch_treasury_rates_fmp(
+    start: str,
+    end: str | None = None,
+    cache_dir: Path | None = None,
+    api_key: str | None = None,
+    refresh_days: int = DEFAULT_REFRESH_DAYS,
+) -> pd.DataFrame:
+    """Fetch the US Treasury par-yield curve from FMP `/stable/treasury-rates`.
+
+    The CBOE yield *indexes* (^IRX/^TNX/^TYX) live in FMP's index namespace,
+    which is gated above Premium and 402s on the equity EOD endpoint. The
+    `treasury-rates` endpoint IS on Premium and is strictly better for our use:
+    it returns the full par-yield curve (month1..year30) as real percentages
+    rather than the ×10 CBOE convention, and downstream change/z-score/beta
+    factors are scale-invariant either way.
+
+    Cached to `<root>/macro/treasury_rates.parquet`, keyed on date, with the same
+    trailing-`refresh_days` incremental re-pull semantics as the price cache:
+    older rows are immutable, only the recent window is re-fetched.
+
+    Returns a DataFrame indexed by tz-naive midnight-normalized date with one
+    column per tenor (e.g. "month3", "year10", "year30").
+    """
+    api_key = _resolve_api_key(api_key)
+    cache_dir = _resolve_cache_dir(cache_dir)
+    end = end or pd.Timestamp.today().strftime("%Y-%m-%d")
+    path = cache_dir / "macro" / "treasury_rates.parquet"
+
+    # Incremental: re-pull only the trailing window when a cache already exists.
+    fetch_start = start
+    if path.exists():
+        existing = pd.read_parquet(path)
+        if not existing.empty:
+            last = pd.to_datetime(existing["date"]).max()
+            fetch_start = (last - pd.Timedelta(days=refresh_days)).strftime("%Y-%m-%d")
+
+    data = _fetch_with_429_retry(
+        _fmp_url("treasury-rates", api_key, **{"from": fetch_start, "to": end})
+    )
+    if isinstance(data, list) and data:
+        df = pd.DataFrame(data)
+        df["date"] = _normalize_ts(df["date"])
+        _merge_and_write(path, df, key_cols=["date"])
+
+    if not path.exists():
+        raise RuntimeError("FMP returned no treasury-rates data")
+
+    out = pd.read_parquet(path)
+    out["date"] = _normalize_ts(out["date"])
+    return out.set_index("date").sort_index()
+
+
 def _safe_filename(symbol: str) -> str:
     """Make a symbol safe for use as a filename (^GSPC, BRK-B, etc.)."""
     return symbol.replace("/", "_").replace("\\", "_")

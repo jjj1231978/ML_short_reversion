@@ -150,26 +150,30 @@ neutralization:
   industry_level: "gics_sub_industry"  # peer group for median subtraction
 
 macro:
-  # Disabled: the 24 passthrough macro/HMM columns were dropping ~85% of weeks
-  # to NaN in train.py's dropna, gutting universe coverage. Paper has zero
-  # macro/regime factors — every paper factor is stock-level. Re-enable only
-  # after train.py handles passthrough NaN explicitly (fillna 0) instead of
-  # dropping rows.
-  enabled: false
-  # Logical name -> FMP symbol. Override any entry if your FMP plan gates the
-  # default symbol (e.g., yield indexes ^TNX/^IRX may require Premium).
+  # Enabled: the passthrough-NaN blocker that previously gutted universe
+  # coverage is fixed — train.py now fillna(0.0)s train/val/test so passthrough
+  # macro/HMM columns no longer drop weeks via row-level dropna (train.py:181,
+  # 183, 224). Note the paper itself has zero macro/regime factors (all paper
+  # factors are stock-level); this is an extension, so compare against the
+  # macro-off baseline when judging its contribution.
+  enabled: true
+  # Logical name -> FMP symbol. "treasury:<tenor>" routes to the FMP
+  # treasury-rates curve; everything else hits the equity EOD endpoint.
+  # FMP's index/commodity namespaces (^NDX, CLUSD, HGUSD, DX-Y.NYB, ^TNX/^IRX/
+  # ^TYX) are gated above Premium and 402 on the EOD endpoint, so we proxy with
+  # liquid ETFs (QQQ/USO/CPER/UUP) and pull real yields from treasury-rates.
   symbols:
     SPX: "^GSPC"
-    NDX: "^NDX"
+    NDX: "QQQ"                 # ^NDX gated → Nasdaq-100 ETF proxy
     RUT: "^RUT"
     VIX: "^VIX"
-    US10Y: "^TNX"
-    US30Y: "^TYX"
-    US3M: "^IRX"
-    OIL: "CLUSD"
+    US10Y: "treasury:year10"
+    US30Y: "treasury:year30"
+    US3M: "treasury:month3"
+    OIL: "USO"                 # CLUSD gated → WTI ETF proxy
     GOLD: "GCUSD"
-    COPPER: "HGUSD"
-    DXY: "DX-Y.NYB"
+    COPPER: "CPER"             # HGUSD gated → copper ETF proxy
+    DXY: "UUP"                 # DX-Y.NYB gated → dollar-index ETF proxy
     EURUSD: "EURUSD"
     USDJPY: "USDJPY"
 

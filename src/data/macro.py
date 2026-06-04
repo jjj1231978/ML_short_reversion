@@ -37,25 +37,40 @@ log = logging.getLogger(__name__)
 
 # Reasonable defaults across the four families. Override via configs/default.yaml
 # under `macro.symbols: {NAME: FMP_SYMBOL}` if a symbol isn't on your FMP plan.
+#
+# Symbol routing (see fetch_macro_data):
+#   - "treasury:<tenor>" → FMP /stable/treasury-rates curve column (on Premium).
+#   - anything else      → equity EOD endpoint /stable/historical-price-eod/full.
+#
+# FMP's dedicated index/commodity namespaces (^NDX, CLUSD, HGUSD, DX-Y.NYB, and
+# the CBOE yield indexes ^TNX/^IRX/^TYX) are gated above Premium and 402 on the
+# equity endpoint. We substitute liquid ETF proxies that the equity endpoint
+# DOES serve, and pull real yields from treasury-rates. Proxies track their
+# underlyings well on weekly returns (USO/UUP carry mild roll/level drift —
+# fine for return/z-score/beta regime factors, not for absolute levels).
 DEFAULT_MACROS: dict[str, str] = {
-    # Stock indexes
+    # Stock indexes (^GSPC/^RUT/^VIX are served on the equity endpoint; ^NDX is
+    # gated → Nasdaq-100 ETF QQQ proxy).
     "SPX": "^GSPC",
-    "NDX": "^NDX",
+    "NDX": "QQQ",
     "RUT": "^RUT",
     "VIX": "^VIX",
-    # Treasury yield indexes (values in tenths of a percent; scale-invariant downstream)
-    "US10Y": "^TNX",
-    "US30Y": "^TYX",
-    "US3M": "^IRX",
-    # Commodities
-    "OIL": "CLUSD",
+    # Treasury par yields (real %, full curve) — see fetch_treasury_rates_fmp.
+    "US10Y": "treasury:year10",
+    "US30Y": "treasury:year30",
+    "US3M": "treasury:month3",
+    # Commodities (GCUSD gold is served; WTI/copper gated → USO/CPER ETF proxies).
+    "OIL": "USO",
     "GOLD": "GCUSD",
-    "COPPER": "HGUSD",
-    # FX
-    "DXY": "DX-Y.NYB",
+    "COPPER": "CPER",
+    # FX (EURUSD/USDJPY served directly; DXY index gated → UUP dollar-ETF proxy).
+    "DXY": "UUP",
     "EURUSD": "EURUSD",
     "USDJPY": "USDJPY",
 }
+
+# Prefix marking a symbol as a treasury-rates curve tenor rather than an EOD ticker.
+_TREASURY_PREFIX = "treasury:"
 
 
 def fetch_macro_data(
@@ -86,16 +101,26 @@ def fetch_macro_data(
         column per `macro_name`, forward-filled across business-day gaps
         (macro state is persistent across weekends/holidays).
     """
-    from src.data.fmp import fetch_market_close_fmp
+    from src.data.fmp import fetch_market_close_fmp, fetch_treasury_rates_fmp
 
     if symbols is None:
         symbols = dict(DEFAULT_MACROS)
     if end is None:
         end = pd.Timestamp.today().strftime("%Y-%m-%d")
 
+    # Split treasury-curve tenors (one shared endpoint call) from per-symbol EOD.
+    tsy_syms = {n: s[len(_TREASURY_PREFIX):] for n, s in symbols.items() if s.startswith(_TREASURY_PREFIX)}
+    eod_syms = {n: s for n, s in symbols.items() if not s.startswith(_TREASURY_PREFIX)}
+
+    def _normalize_index(idx: pd.Index) -> pd.Index:
+        idx = pd.to_datetime(idx)
+        if getattr(idx, "tz", None) is not None:
+            idx = idx.tz_localize(None)
+        return idx.normalize()
+
     series: dict[str, pd.Series] = {}
     failed: list[tuple[str, str]] = []
-    for name, sym in symbols.items():
+    for name, sym in eod_syms.items():
         try:
             s = fetch_market_close_fmp(
                 sym, start, end,
@@ -103,15 +128,29 @@ def fetch_macro_data(
                 api_key=api_key,
                 rate_limit_per_min=rate_limit_per_min,
             )
-            s.index = pd.to_datetime(s.index)
-            if getattr(s.index, "tz", None) is not None:
-                s.index = s.index.tz_localize(None)
-            s.index = s.index.normalize()
+            s.index = _normalize_index(s.index)
             s.name = name  # label by logical name, not FMP symbol
             series[name] = s
         except Exception as e:
             log.warning(f"Macro fetch failed for {name}={sym!r}: {type(e).__name__}: {e}")
             failed.append((name, sym))
+
+    # Treasury par yields: one curve fetch, then slice the requested tenors.
+    if tsy_syms:
+        try:
+            curve = fetch_treasury_rates_fmp(start, end, cache_dir=cache_dir, api_key=api_key)
+            curve.index = _normalize_index(curve.index)
+            for name, tenor in tsy_syms.items():
+                if tenor in curve.columns:
+                    s = curve[tenor].dropna()
+                    s.name = name
+                    series[name] = s
+                else:
+                    log.warning(f"Macro fetch failed for {name}: tenor {tenor!r} not in treasury curve {list(curve.columns)}")
+                    failed.append((name, f"{_TREASURY_PREFIX}{tenor}"))
+        except Exception as e:
+            log.warning(f"Treasury-rates fetch failed: {type(e).__name__}: {e}")
+            failed.extend((n, f"{_TREASURY_PREFIX}{t}") for n, t in tsy_syms.items())
 
     if not series:
         raise RuntimeError(f"All macro fetches failed. Tried: {list(symbols.items())}")
