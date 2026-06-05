@@ -636,10 +636,15 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = FORECASTS_ROOT / signal_day
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = args.output or out_dir / f"{target_wed.strftime('%Y-%m-%d')}.parquet"
+    bundle_retrain_date = (
+        bundle["retrain_date"] if (bundle and not do_retrain)
+        else retrain_date_used.strftime("%Y-%m-%d")
+    )
     full = df.copy()
     full["as_of_date"] = latest_wed
     full["target_date"] = target_wed
     full["signal_day"] = signal_day
+    full["bundle_retrain_date"] = bundle_retrain_date  # model vintage / provenance
     # Rank within (region, eligible-only): 1 = top long, N = bottom short. NaN
     # for ineligible rows.
     full["region_rank"] = (
@@ -649,6 +654,35 @@ def main(argv: list[str] | None = None) -> int:
     )
     full.to_parquet(out_path)
     log.info(f"Wrote full predictions: {out_path} ({len(full):,} rows)")
+
+    # Append the named top/bottom picks to the accumulating ledger (SQLite + CSV).
+    # `close` lets any now-resolvable picks carry realized returns immediately;
+    # this forecast's own target is in the future, so it logs with realized=NULL
+    # and is filled later by `python -m src.backtest.forecast_picks_log`.
+    try:
+        from src.backtest.forecast_picks_log import record_model_version, update_for_forecast
+
+        update_for_forecast(full, close=close, n_per_side=args.top_n)
+        # Record the model vintage that produced these picks (separate table;
+        # picks reference bundle_retrain_date). Authoritative — overwrites any
+        # gap-filled backfill row for this vintage.
+        vhash = record_model_version(
+            {
+                "members": members,
+                "combine_method": combine_method,
+                "feature_columns": feature_columns,
+                "train_weeks": cfg["model"]["train_weeks"],
+                "val_weeks": cfg["model"]["val_weeks"],
+                "retrain_freq": retrain_freq,
+                "models": models,
+                "saved_at": (bundle.get("saved_at") if (bundle and not do_retrain) else None),
+            },
+            signal_day=signal_day,
+            retrain_date=bundle_retrain_date,
+        )
+        log.info(f"Model version recorded: {bundle_retrain_date} (config_hash={vhash})")
+    except Exception as e:
+        log.warning(f"Picks-ledger update failed (forecast parquet still written): {e}")
 
     # Pretty-print per-region top/bottom.
     weekday_name = WEEKDAY_INDEX_TO_NAME[WEEKDAY_CODE_TO_INDEX[signal_day]]
