@@ -281,7 +281,9 @@ def _build_features_and_close(
             log.warning(f"Macro fetch failed: {e}")
         if macro_df is not None and macro_cfg.get("hmm_enabled", True):
             regimes_path = PROCESSED_DIR / "macro_regimes.parquet"
-            macro_regimes_df = load_macro_regimes(regimes_path)
+            macro_regimes_df = load_macro_regimes(
+                regimes_path, expected_macros=set(macro_df.columns)
+            )
             if macro_regimes_df is None or macro_cfg.get("hmm_refit", False):
                 try:
                     macro_regimes_df = build_and_save_macro_regimes(

@@ -94,11 +94,35 @@ def build_and_save_macro_regimes(
     return regimes
 
 
-def load_macro_regimes(path: Path) -> pd.DataFrame | None:
-    """Load cached regime posteriors if present; return None if missing."""
+def _macros_in_regimes(df: pd.DataFrame) -> set[str]:
+    """Recover the macro name set from regime columns ({NAME}_HMM_*)."""
+    return {c.split("_HMM_")[0] for c in df.columns if "_HMM_" in c}
+
+
+def load_macro_regimes(
+    path: Path, expected_macros: set[str] | None = None
+) -> pd.DataFrame | None:
+    """Load cached regime posteriors if present; return None if missing or stale.
+
+    `expected_macros` guards against a silently-stale cache: regimes are built
+    once and reused (hmm_refit=False), but if the macro universe changes (e.g.
+    new ETF-proxy / treasury series get added) a cache built on the old set no
+    longer matches the feature matrix. When the cached macro set differs from
+    `expected_macros`, return None so the caller rebuilds — keeping the backtest
+    (src.main) and live inference (src.predict) on the same feature columns.
+    """
     if not path.exists():
         return None
     df = pd.read_parquet(path)
+    if expected_macros is not None:
+        have = _macros_in_regimes(df)
+        want = {str(m) for m in expected_macros}
+        if have != want:
+            log.warning(
+                f"Macro-regime cache is stale: cached macros {sorted(have)} != "
+                f"current {sorted(want)}. Ignoring cache (will rebuild)."
+            )
+            return None
     log.info(f"Loaded macro regimes from {path}: {df.shape[0]} dates × {df.shape[1]} cols")
     return df
 

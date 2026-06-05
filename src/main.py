@@ -235,7 +235,9 @@ def run_pipeline(config_name: str = "default") -> dict:
 
         if macro_df is not None and macro_cfg.get("hmm_enabled", True):
             regimes_path = PROCESSED_DIR / "macro_regimes.parquet"
-            macro_regimes_df = load_macro_regimes(regimes_path)
+            macro_regimes_df = load_macro_regimes(
+                regimes_path, expected_macros=set(macro_df.columns)
+            )
             if macro_regimes_df is None or macro_cfg.get("hmm_refit", False):
                 log.info("Phase 1f: Fitting HMM regime posteriors (once over full history)...")
                 try:
