@@ -22,7 +22,9 @@ src/
   backtest/     — portfolio construction, ADV-scaled basket weights, cost model, R1W baseline
   diagnostics/  — SHAP fan-out, alpha decay, weekday effect
   reporting/    — multi-agent (briefing → critique → synthesize) report generation
-app/            — Streamlit viewer (7 pages: overview, predictions, SHAP, alpha decay, weekday, param explorer, report)
+  main.py       — full backtest pipeline (data → features → ensemble → backtest → SHAP → diagnostics)
+  predict.py    — live forecast for the next rebalance, per signal day (WED/THU/FRI); writes forecasts/{day}/<target>.parquet, picks ledger, model-version history
+app/            — Streamlit viewer (9 pages: overview, predictions, SHAP, alpha decay, weekday, param explorer, report, live forecast, track record)
 notebooks/      — exploratory analysis; figures/ holds the persisted SHAP PNGs
 configs/        — YAML configs for universe, model params, backtest settings
 tests/          — unit and integration tests
@@ -109,3 +111,9 @@ Paper claims to verify; current state in parentheses:
 Phase 1 (shipped 2026-05-15): multi-region US/UK/CA (S&P 500 ex-financials PIT, FTSE 100 + TSX 60 snapshot), 2008-01-30 → 2026-05-13 (955 weeks), ensemble of XGB + LGB + RF + MLP. Latest run (2026-06-06) expands the factor set to **106 factors** over 690 backtest weeks: ensemble IR (net of 1.5 bps/side, 1-day lag) = 1.06; best member (LGB) = 1.17, RF = 1.14; paper net Global L/S IR = 1.6. R1W reversal baseline IR = 1.09. (The earlier 24-factor run scored ensemble IR 1.00, RF 1.13.) See [`.specify/007-implementation-plan.md`](.specify/007-implementation-plan.md) for the full results table.
 
 Phase 2 priorities (ordered by expected information value): true UPDOWN1W from IBES/Refinitiv/FMP-estimates → region × industry quintile peer grouping → factor expansion toward 86 → 520/104 train/val window → EU + JP regions. See [`.specify/001-overview.md`](.specify/001-overview.md) for phase boundaries and [`.specify/007-implementation-plan.md`](.specify/007-implementation-plan.md) for the ordered work list.
+
+## Live Forecasting
+
+`python -m src.predict --signal-day {WED|THU|FRI}` produces the next-rebalance long/short picks. While the backtest target is Wednesday-to-Wednesday, the live forecaster supports any of the three signal days, each with its **own trained model bundle** (`data/processed/models/{day}/<as-of>.joblib`) and forecast file (`data/processed/forecasts/{day}/<target>.parquet`). The bundles share the same config and hyperparameters (`config_hash` matches across days) but are fit on day-specific rolling windows. A retrain is ~14 min; pass `--no-refresh-prices --no-refresh-fundamentals --no-refresh-grades --no-refresh-membership` to run cache-only (skips the ~45 min FMP fetch). The Streamlit "Live forecast" and "Track record" pages auto-discover whatever forecast files exist per day.
+
+Current live forecasts (generated 2026-06-06, all three days, `config_hash=c0315c6ea324`): WED → target 2026-06-10, THU → 2026-06-11, FRI → 2026-06-12.
