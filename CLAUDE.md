@@ -39,17 +39,18 @@ tests/          — unit and integration tests
 
 ## Factor Groups
 
-Currently 24 factors live in the model (vs paper's 86):
+Currently 106 factors live in the model (vs paper's 86). Representative members per group (not exhaustive):
 
 | Group | Factors | Data Source |
 |---|---|---|
-| Price Reversals | R1W, IREV1W (beta-adjusted residual), RSI5D, RSI14, RSI30 | FMP / Databento prices |
-| Price Momentum | R1M, R3M1M, R6M1M, R12M1M | FMP / Databento prices |
-| Low Risk | VOL6M, VOL12M, BETA6M | FMP / Databento prices + market index |
-| Value | PE, PB, EVEBIT, EVEBITDA, EVSALES | SimFin / FMP fundamentals |
-| Profitability / Quality | ROE, ROA, GPOA, OPRDIC, GBROC, DE, ACCRUALS, SALES_GROWTH_YOY | SimFin / FMP fundamentals |
+| Price Reversals | R1W, IREV1W (beta-adjusted residual), IREV1M, IREVVOL1W, IREVVOL1M, RSI5D, RSI14, RSI30 | FMP / Databento prices |
+| Price Momentum | R1M, R3M1M, R6M1M, R12M1M, IMOM12M1M, IMOM3M1M, IMOMVOL12M1M, IMOMVOL3M1M | FMP / Databento prices |
+| Size | SIZE (log market cap) | FMP / Databento prices |
+| Low Risk | VOL6M, VOL12M, IVOL6M, IVOL12M, DOWNVOL6M, BETA6M, BETA12M, plus macro betas (BETA_VIX, BETA_US10Y, BETA_OIL, BETA_DXY) | FMP / Databento prices + market/macro series |
+| Value | PE, PB, PTB, PSALES, EVEBIT, EVEBITDA, EVSALES | SimFin / FMP fundamentals |
+| Profitability / Quality / Leverage | ROE, ROA, ROIC, GPOA, GBROC, OPRDIC, OPRDA, GROSSMARGIN, EBIT_COVER, ACCRUALS, SALES_GROWTH_YOY, DE, DEBITDA, NDE, NDEBITDA, LTDE, LTDEBITDA | SimFin / FMP fundamentals |
 | Analyst (UPDOWN1W proxy) | UPDOWN1W_RATINGS | FMP `/grades` (rating-change events, *not* EPS-revision counts) |
-| Macro / Regime (passthrough) | macro returns + HMM-regime posteriors | FMP series + fitted HMM in `src/features/regime.py` |
+| Macro / Regime (passthrough) | macro 5-day returns (OIL_R5, GOLD_R5, SPX_R5, DXY_R5, US10Y_D5, VIX_D5…) + per-series HMM-regime posteriors (S0/S1/transition across ~13 series: SPX, NDX, RUT, VIX, OIL, GOLD, COPPER, DXY, EURUSD, USDJPY, US3M/10Y/30Y) + trend/level flags (OIL_TREND_UP, US10Y_HI…) | FMP series + fitted HMM in `src/features/regime.py` |
 
 **Gap vs paper**: true UPDOWN1W (EPS-estimate-revision count) and SUE1W/3/6 are
 absent — gated on an IBES / Refinitiv / FMP-estimates sourcing decision (see
@@ -95,16 +96,16 @@ pytest tests/test_neutralization_stacked.py  # single test
 
 Paper claims to verify; current state in parentheses:
 
-- R1W should emerge as the top SHAP feature organically — **not confirmed** (currently #4; VOL12M and VOL6M lead)
-- 7-day EPS revision should rank second — **untestable** (true UPDOWN1W not yet sourced; the FMP-grades proxy `UPDOWN1W_RATINGS` ranks #23)
+- R1W should emerge as the top SHAP feature organically — **confirmed** in the 106-factor run (R1W now #1 in the ensemble and in xgb/lgb/rf individually; VOL12M demoted to #9, VOL6M to #28). Was #4 in the 24-factor run — the factor expansion fixed it.
+- 7-day EPS revision should rank second — **untestable** (true UPDOWN1W not yet sourced; the FMP-grades proxy `UPDOWN1W_RATINGS` ranks #102 of 106)
 - Alpha decay test: plot annualized IR vs 0-4 day execution lags — **confirmed** (monotone 12.7% → 4.7%)
 - Weekday effect: Thursday signals should outperform Monday signals — **confirmed and stronger** (monotone Mon→Fri ramp, 22% → 35%)
 - Quintile spread: monotonic returns from Q1 (short) to Q5 (long) — TODO surface in Streamlit
-- Compare ML model vs R1W-only baseline — done (ensemble IR 1.00 vs baseline ~1.10; ML's edge is in turnover/drawdown, not return)
+- Compare ML model vs R1W-only baseline — done (106-factor run: ensemble IR 1.06 vs baseline 1.09; ML's edge is in turnover/drawdown, not return)
 - vs earnings-filtered reversal baseline — gated on Phase 2 UPDOWN1W
 
 ## Backtest Scope
 
-Phase 1 (shipped 2026-05-15): multi-region US/UK/CA (S&P 500 ex-financials PIT, FTSE 100 + TSX 60 snapshot), 2008-01-30 → 2026-05-13 (955 weeks), 24 factors, ensemble of XGB + LGB + RF + MLP. Ensemble IR (net of 1.5 bps/side, 1-day lag) = 1.00; best member (RF) = 1.13; paper net Global L/S IR = 1.6. R1W reversal baseline IR ≈ 1.10. See [`.specify/007-implementation-plan.md`](.specify/007-implementation-plan.md) for the full results table.
+Phase 1 (shipped 2026-05-15): multi-region US/UK/CA (S&P 500 ex-financials PIT, FTSE 100 + TSX 60 snapshot), 2008-01-30 → 2026-05-13 (955 weeks), ensemble of XGB + LGB + RF + MLP. Latest run (2026-06-06) expands the factor set to **106 factors** over 690 backtest weeks: ensemble IR (net of 1.5 bps/side, 1-day lag) = 1.06; best member (LGB) = 1.17, RF = 1.14; paper net Global L/S IR = 1.6. R1W reversal baseline IR = 1.09. (The earlier 24-factor run scored ensemble IR 1.00, RF 1.13.) See [`.specify/007-implementation-plan.md`](.specify/007-implementation-plan.md) for the full results table.
 
 Phase 2 priorities (ordered by expected information value): true UPDOWN1W from IBES/Refinitiv/FMP-estimates → region × industry quintile peer grouping → factor expansion toward 86 → 520/104 train/val window → EU + JP regions. See [`.specify/001-overview.md`](.specify/001-overview.md) for phase boundaries and [`.specify/007-implementation-plan.md`](.specify/007-implementation-plan.md) for the ordered work list.

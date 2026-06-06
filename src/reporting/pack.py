@@ -282,10 +282,22 @@ def build_research_pack(processed_dir: Path | None = None) -> dict:
     }
     # Per-member SHAP top features, alongside the canonical (XGBoost) one.
     shap_per_member = {}
+    canonical_imp_df = None
     for member in ensemble_members:
         suffix = "" if member == "xgboost" else f"_{member}"
         imp_df = _safe_read_parquet(p_dir / f"feature_importance{suffix}.parquet")
+        if member == "xgboost":
+            canonical_imp_df = imp_df
         shap_per_member[member] = _summarize_shap(imp_df)
+
+    # Actual factor count = number of model inputs in this run, read from the
+    # SHAP importance table (one row per input feature). Falls back to the
+    # hardcoded Phase-1 list if artifacts are missing.
+    actual_factor_count = (
+        len(canonical_imp_df)
+        if canonical_imp_df is not None and not canonical_imp_df.empty
+        else len(PHASE1_FACTORS)
+    )
 
     pack = {
         "schema_version": 3,
@@ -298,7 +310,7 @@ def build_research_pack(processed_dir: Path | None = None) -> dict:
                 "start": cfg["data"].get("start_date"),
                 "end": cfg["data"].get("end_date"),
             },
-            "factor_count": len(PHASE1_FACTORS),
+            "factor_count": actual_factor_count,
             "config_factor_count_phase1": len(PHASE1_FACTORS),  # back-compat
             "config_train_weeks": cfg["model"].get("train_weeks"),
             "config_val_weeks": cfg["model"].get("val_weeks"),
