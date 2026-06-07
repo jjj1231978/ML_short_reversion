@@ -62,7 +62,7 @@ def save_bundle(
     retrain_freq: int,
     signal_day: str = "WED",
     extra: dict | None = None,
-) -> Path:
+) -> dict:
     """Persist a retrain artifact and update state.json.
 
     `feature_columns` is the exact column order the models were fit on — the
@@ -71,6 +71,10 @@ def save_bundle(
 
     Per-`signal_day` namespacing keeps Wed/Thu/Fri bundles separate (their
     feature distributions differ; one model cannot score another's features).
+
+    Returns the persisted payload (including the generated ``saved_at`` and the
+    on-disk ``path``) so callers can record provenance without re-reading the
+    joblib — e.g. predict.py logs ``saved_at`` into the model_versions table.
     """
     sd = signal_day.upper()
     _ensure_dir(sd)
@@ -93,7 +97,10 @@ def save_bundle(
     joblib.dump(payload, path)
     _write_state(date_str, retrain_freq, sd)
     log.info(f"Saved model bundle: {path}")
-    return path
+    # `path` added after dump so it lives only on the returned in-memory dict,
+    # never persisted into the joblib (where it could go stale if moved).
+    payload["path"] = path
+    return payload
 
 
 def _write_state(latest_date: str, retrain_freq: int, signal_day: str) -> None:

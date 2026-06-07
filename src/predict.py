@@ -565,7 +565,7 @@ def main(argv: list[str] | None = None) -> int:
         models, members, combine_method, retrain_date_used = _retrain_with_close(
             cfg, features, close, latest_wed, signal_day=signal_day
         )
-        save_bundle(
+        saved = save_bundle(
             retrain_date=retrain_date_used,
             models=models,
             members=members,
@@ -577,11 +577,13 @@ def main(argv: list[str] | None = None) -> int:
             signal_day=signal_day,
         )
         feature_columns = list(features.columns)
+        model_saved_at = saved.get("saved_at")
     else:
         models = bundle["models"]
         members = bundle["members"]
         combine_method = bundle["combine_method"]
         feature_columns = bundle["feature_columns"]
+        model_saved_at = bundle.get("saved_at")
         log.info(f"Reusing bundle from {bundle['retrain_date']} "
                  f"({len(members)} members: {members})")
 
@@ -677,7 +679,7 @@ def main(argv: list[str] | None = None) -> int:
                 "val_weeks": cfg["model"]["val_weeks"],
                 "retrain_freq": retrain_freq,
                 "models": models,
-                "saved_at": (bundle.get("saved_at") if (bundle and not do_retrain) else None),
+                "saved_at": model_saved_at,
             },
             signal_day=signal_day,
             retrain_date=bundle_retrain_date,
