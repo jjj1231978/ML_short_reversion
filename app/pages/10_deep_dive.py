@@ -146,7 +146,12 @@ for ticker, rec in tickers.items():
             "alignment": tech.get("alignment", "neutral"),
             "verdict_label": tech.get("verdict_label", DASH),
             "rsi14": tech.get("rsi14"),
-            "pct_of_52w_range": tech.get("pct_of_52w_range"),
+            # stored 0-1; scaled to 0-100 here because ProgressColumn's `format`
+            # is applied to the raw value, so a fraction would print as 0% / 1%.
+            "pct_of_52w_range": (
+                None if tech.get("pct_of_52w_range") is None
+                else tech["pct_of_52w_range"] * 100.0
+            ),
             "move_since_signal_pct": tech.get("move_since_signal_pct"),
             "ret_1w_pct": tech.get("ret_1w_pct"),
             "eps_surprise_pct": _get(fun, "last_earnings", "eps_surprise_pct"),
@@ -297,8 +302,9 @@ st.dataframe(
         "verdict_label": st.column_config.TextColumn("Technical verdict", width="medium"),
         "rsi14": st.column_config.NumberColumn("RSI", format="%.0f"),
         "pct_of_52w_range": st.column_config.ProgressColumn(
-            "52w range", format="%.0f%%", min_value=0, max_value=1,
-            help="Position within the trailing 52-week high/low.",
+            "52w range", format="%.0f%%", min_value=0, max_value=100,
+            help="Where the last close sits between the trailing 52-week low "
+                 "and high. 0% = at the 52-week low, 100% = at the high.",
         ),
         "move_since_signal_pct": st.column_config.NumberColumn("Since signal", format="%+.1f%%"),
         "ret_1w_pct": st.column_config.NumberColumn("1w", format="%+.1f%%"),
