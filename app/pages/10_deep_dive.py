@@ -331,15 +331,18 @@ ordered = view.sort_values(
     ["alignment", "region", "side", "rank"],
     key=lambda s: s.map({"conflict": 0, "aligned": 1, "neutral": 2}) if s.name == "alignment" else s,
 )
+# Keep every f-string replacement field on one line: a newline inside {...} is
+# PEP 701 syntax, which parses on the 3.12 dev venv but not on the 3.11 Space.
+def _choice_label(t: str) -> str:
+    row = view.loc[view.ticker == t].iloc[0]
+    badge = risk_badge(row["alignment"], row["side"])
+    return f"{t} · {row['region']} {str(row['side']).lower()} · {badge}"
+
+
 choice = st.selectbox(
     "Ticker",
     ordered["ticker"].tolist(),
-    format_func=lambda t: (
-        f"{t} · {view.loc[view.ticker == t, 'region'].iloc[0]} "
-        f"{view.loc[view.ticker == t, 'side'].iloc[0].lower()} "
-        f"· {risk_badge(view.loc[view.ticker == t, 'alignment'].iloc[0],
-                        view.loc[view.ticker == t, 'side'].iloc[0])}"
-    ),
+    format_func=_choice_label,
     help="Names entering against the one-week reversion are listed first.",
 )
 
