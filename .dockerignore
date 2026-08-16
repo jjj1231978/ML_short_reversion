@@ -1,0 +1,40 @@
+# Docker build context exclusions.
+#
+# The Dockerfile does `COPY . .`. On the Hugging Face Space the build context is
+# the Space repo, which never contains .env (it is gitignored and the deploy
+# script uses `git add -A`, which honours that). This file guards LOCAL
+# `docker build` runs, where the context is your real working tree — without it,
+# your live FMP / Databento / Anthropic / HF keys get baked into an image layer
+# and survive even if a later layer deletes them.
+
+# Secrets
+.env
+.env.*
+*.key
+*.pem
+.netrc
+
+# VCS / build metadata. Nothing at runtime reads git — the Streamlit app loads
+# only the parquet/db artifacts under data/processed.
+.git
+.gitattributes
+.gitignore
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Heavy caches the viewer does not read. All are gitignored, so they are absent
+# from the Space context but present locally; excluding them keeps a local build
+# from shipping several GB into the daemon.
+data/raw/
+data/processed/models/
+data/processed/archive_*/
+logs/

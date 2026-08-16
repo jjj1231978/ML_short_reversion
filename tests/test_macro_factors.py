@@ -168,7 +168,11 @@ def test_hmm_fit_is_deterministic_for_same_seed():
     pd.testing.assert_frame_equal(r1, r2)
 
 
-def test_hmm_walk_forward_is_strictly_causal():
+# Keep this name short. The previous name was `test_` + exactly 35 lowercase
+# chars, which is the shape of a Lob API key — HuggingFace's secret scanner
+# flagged it on every Space deploy. Anything well under 35 chars after `test_`
+# avoids the false positive.
+def test_hmm_walk_forward_causality():
     """Output at date t must depend only on data observed up to t-1 (where
     the fit happened at the most recent refit). Truncating the input at t and
     rerunning must yield identical posteriors for all rows <= t.
