@@ -59,8 +59,14 @@ export HF_USER_ENV="$HF_USER"
 HEADSHA=$(git rev-parse HEAD)
 echo "deploying $HEADSHA -> $SPACE_URL"
 
-git branch -D hf-main 2>/dev/null || true
+# Clear any leftover deploy worktree from an interrupted run FIRST. A branch
+# that is checked out in a worktree cannot be deleted, so `git branch -D` alone
+# fails here and the whole deploy aborts.
+git worktree list --porcelain \
+    | awk '/^worktree /{p=$2} /^branch refs\/heads\/hf-main$/{print p}' \
+    | while read -r old; do git worktree remove --force "$old" 2>/dev/null || true; done
 git worktree prune
+git branch -D hf-main 2>/dev/null || true
 git worktree add --detach "$WT" "$HEADSHA" >/dev/null
 trap 'git worktree remove --force "$WT" 2>/dev/null || true; rm -f "$ASKPASS"' EXIT
 
