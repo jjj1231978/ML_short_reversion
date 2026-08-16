@@ -318,11 +318,22 @@ model:
     # installed and authenticated (`modal setup`); switch to `local` to run the
     # in-process loop instead.
     random_ensemble:
-      # Set false 2026-08-16 for the isolation A/B: the bag-ON run (THU, 67
-      # factors, 740 weeks) scored lightgbm IR 1.295 / ensemble 1.334, but four
-      # things had changed at once vs the June baseline, so the bag's own
-      # contribution was not separable. This run flips ONLY this flag.
-      enabled: false
+      # Restored to true 2026-08-16. It was set false for an isolation A/B against
+      # the bag-ON run (THU, 67 factors, 740 weeks: lightgbm IR 1.295 / ensemble
+      # 1.334), but that run was stopped at 8 of ~62 retrains, so the A/B has NO
+      # result — whether the bag helps on this fork is still unknown.
+      #
+      # true is nonetheless the right default: it matches the artifacts published
+      # on the Space, and it is the only setting with any supporting evidence
+      # (the sentiment fork's 0.509 -> 0.983). Treat that evidence as weak here —
+      # there LightGBM was the WEAKEST member with room to improve, whereas on
+      # this fork it is already among the strongest.
+      #
+      # To finish the A/B: set false and re-run `python -m src.main`. Retrain
+      # checkpointing resumes from step 9 rather than restarting, since the
+      # fingerprint now covers member hyperparameters and the 8 completed
+      # bag-OFF bundles are still on disk.
+      enabled: true
       backend: modal           # modal (fan out across CPU containers) | local
       n_workers: 10            # modal: number of parallel CPU containers
       n_candidates: 200
