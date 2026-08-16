@@ -67,3 +67,8 @@ Thumbs.db
 # Secrets
 .env
 *.key
+
+# Order/position artifacts — these contain the live trading book and must never
+# reach the HF Space or any published surface.
+data/processed/orders_*.csv
+data/processed/paper_positions_*.csv
