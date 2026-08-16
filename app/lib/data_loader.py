@@ -23,8 +23,14 @@ def _mtime(path: Path) -> float:
 
 
 @st.cache_data
-def load_parquet(name: str, _mtime_key: float | None = None) -> pd.DataFrame | None:
-    """Load a parquet from `data/processed/` by base name (no extension)."""
+def load_parquet(name: str, mtime_key: float | None = None) -> pd.DataFrame | None:
+    """Load a parquet from `data/processed/` by base name (no extension).
+
+    `mtime_key` must NOT be underscore-prefixed: st.cache_data skips hashing
+    underscore-prefixed arguments, so the previous `_mtime_key` never entered the
+    cache key and a rerun of the pipeline left every page serving the artifact it
+    had first read.
+    """
     p = PROCESSED_DIR / f"{name}.parquet"
     if not p.exists():
         return None
@@ -32,7 +38,7 @@ def load_parquet(name: str, _mtime_key: float | None = None) -> pd.DataFrame | N
 
 
 @st.cache_data
-def load_json(name: str, _mtime_key: float | None = None) -> dict | None:
+def load_json(name: str, mtime_key: float | None = None) -> dict | None:
     p = PROCESSED_DIR / f"{name}.json"
     if not p.exists():
         return None
@@ -44,9 +50,9 @@ def get(name: str, kind: str = "parquet"):
     p = PROCESSED_DIR / f"{name}.{kind}"
     key = _mtime(p)
     if kind == "parquet":
-        return load_parquet(name, _mtime_key=key)
+        return load_parquet(name, mtime_key=key)
     if kind == "json":
-        return load_json(name, _mtime_key=key)
+        return load_json(name, mtime_key=key)
     raise ValueError(f"Unknown kind: {kind}")
 
 

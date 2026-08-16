@@ -31,7 +31,7 @@ XGBoost, LightGBM, and RandomForest, with SHAP attribution per member.
 | Weekday effect | IR by signal weekday (Mon-Fri) |
 | Parameter explorer | Backtest sensitivity to config knobs |
 | Report | Multi-agent research note (briefing → critique → synthesis) |
-| Live forecast | Next-rebalance long/short picks per signal day (WED/THU/FRI) |
+| Live forecast | Next-rebalance long/short picks (signal day **THU**) |
 | Track record | Realized performance of past published picks |
 
 ## Current run

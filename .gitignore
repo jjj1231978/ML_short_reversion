@@ -43,6 +43,13 @@ data/processed/*
 !data/processed/forecasts/**
 !data/processed/reports/
 !data/processed/reports/**
+!data/processed/deepdive/
+!data/processed/deepdive/**
+# ...but not the fact sheet packs: they are a working intermediate handed to the
+# session that writes the briefs, the Space never renders them, and their content
+# is already in the .json alongside. Last matching pattern wins, so this must
+# follow the negations above.
+data/processed/deepdive/**/*.factsheets.md
 
 # Python
 __pycache__/

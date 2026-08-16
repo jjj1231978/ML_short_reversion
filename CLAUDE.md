@@ -26,10 +26,16 @@ src/
                   (0.509 → 0.983); not yet re-measured on this fork.
   backtest/     — portfolio construction, ADV-scaled basket weights, cost model, R1W baseline
   diagnostics/  — SHAP fan-out, alpha decay, weekday effect
+  research/     — per-name deep dive over the live picks: FMP fundamentals/valuation,
+                  Tavily news (FMP publishes none for .L/.TO), a deterministic
+                  technical verdict, and a written brief per name
   reporting/    — multi-agent (briefing → critique → synthesize) report generation
   main.py       — full backtest pipeline (data → features → ensemble → backtest → SHAP → diagnostics)
   predict.py    — live forecast for the next rebalance, per signal day (WED/THU/FRI); writes forecasts/{day}/<target>.parquet, picks ledger, model-version history
-app/            — Streamlit viewer (9 pages: overview, predictions, SHAP, alpha decay, weekday, param explorer, report, live forecast, track record)
+app/            — Streamlit viewer (10 pages: overview, predictions, SHAP, alpha decay, weekday, param explorer, report, live forecast, track record, deep dive).
+                  Launch with `PYTHONPATH=. streamlit run app/streamlit_app.py` — Streamlit
+                  restores sys.path around each page run, so without it every page fails
+                  with "No module named 'app'". The Dockerfile already sets PYTHONPATH.
 notebooks/      — exploratory analysis; figures/ holds the persisted SHAP PNGs
 configs/        — YAML configs for universe, model params, backtest settings
 tests/          — unit and integration tests
@@ -135,6 +141,64 @@ Phase 2 priorities (ordered by expected information value): true UPDOWN1W from I
 
 ## Live Forecasting
 
-`python -m src.predict --signal-day {WED|THU|FRI}` produces the next-rebalance long/short picks. While the backtest target is Wednesday-to-Wednesday, the live forecaster supports any of the three signal days, each with its **own trained model bundle** (`data/processed/models/{day}/<as-of>.joblib`) and forecast file (`data/processed/forecasts/{day}/<target>.parquet`). The bundles share the same config and hyperparameters (`config_hash` matches across days) but are fit on day-specific rolling windows. A retrain is ~14 min; pass `--no-refresh-prices --no-refresh-fundamentals --no-refresh-grades --no-refresh-membership` to run cache-only (skips the ~45 min FMP fetch). The Streamlit "Live forecast" and "Track record" pages auto-discover whatever forecast files exist per day.
+`python -m src.predict` produces the next-rebalance long/short picks. **Thursday is the signal day** — it is the `--signal-day` default, it matches `backtest.signal_day`, and it is the only day whose bundles and forecasts are maintained.
 
-Current live forecasts (generated 2026-06-06, all three days, `config_hash=c0315c6ea324`): WED → target 2026-06-10, THU → 2026-06-11, FRI → 2026-06-12.
+The `--signal-day` flag still accepts the other weekdays, each with its **own trained model bundle** (`data/processed/models/{day}/<as-of>.joblib`) and forecast file (`data/processed/forecasts/{day}/<target>.parquet`), fit on day-specific rolling windows. Those are research-only: the WED (118 bundles) and FRI (2 bundles) namespaces are leftovers from the WED→THU migration, not a live book. Do not regenerate them by routine.
+
+A retrain is ~14 min; pass `--no-refresh-prices --no-refresh-fundamentals --no-refresh-grades --no-refresh-membership` to run cache-only (skips the ~45 min FMP fetch). The Streamlit "Live forecast" and "Track record" pages auto-discover whatever forecast files exist per day.
+
+## Deep Dive Research
+
+`python -m src.research deepdive --signal-day THU` researches the model's top-N
+picks per side per region (cap 20, so at most 120 names) and writes one JSON
+dossier to `data/processed/deepdive/THU/<target>.json`, which the **Deep dive**
+Streamlit page renders. Three angles per name: fundamentals (last earnings vs
+estimate, next earnings, TTM valuation), theme and news, and a technical verdict.
+
+**Regional data coverage — verified against the live API.** FMP serves
+fundamentals, valuation and technicals for all three regions, but `news/stock`,
+`grades-consensus` and `price-target-summary` return empty for `.L` and `.TO`
+symbols. **Tavily therefore carries the news and theme layer for every region**
+(`TAVILY_API_KEY` in `.env`). Do not use `earnings-calendar` — it silently
+ignores its `symbol` parameter; use `earnings` instead, which returns past and
+upcoming rows together.
+
+**The technical layer is deterministic** (`src/research/technicals.py`): one
+`technical-indicators/rsi` call returns ~290 daily OHLCV bars *plus* RSI, from
+which SMA20/50/200, ATR, the 52-week range and trailing returns are computed
+locally. A seven-state classifier turns those into a verdict, and `alignment`
+compares it to the side the model took — a LONG that is `OVERBOUGHT_PULLBACK`
+means the reversion model is fighting the tape, which is the single most useful
+column on the page. The narrative layer *narrates* this verdict and never
+recomputes it. Note the shared price cache under `~/data_lake/fmp/prices/` is
+not used here: it only advances when the backtest runs and lags the live
+forecast by weeks.
+
+**Narrative backends** (`deepdive.llm_backend`):
+
+- `session` (default) — the batch job writes `<target>.factsheets.md` and stops.
+  The running Claude Code session writes one JSON brief per ticker and merges
+  them with `python -m src.research merge-narratives --file <briefs.json>`.
+  Free, uses a stronger model than the metered path, but needs a session in the
+  loop. Briefs survive a later `deepdive` rerun (carried forward unless
+  `--drop-narratives`).
+- `api` — one metered call per name via `src/reporting/llm.py`, budget-guarded
+  by `deepdive.max_budget_usd`. This is the backend a cron job needs.
+- `none` — deterministic layer only.
+
+Responses are TTL-cached under `~/data_lake/fmp/deepdive/` (profile 30d,
+valuation/estimates 7d, earnings/news 1d, bars same-day), so a cold 12-name run
+takes ~90s and a re-run ~10s. `--force` bypasses it. Budget for a full 120-name
+book: ~840 FMP + 120 Tavily calls.
+
+The page is read-only like the rest of the viewer; a per-ticker refresh button
+appears only when `DEEPDIVE_ALLOW_REFRESH=1` and the API keys are set.
+
+### Holidays
+
+The target date is a weekly-bin label from calendar arithmetic, so it can land on a market closure. Resolution is **per region** (`src/lib/trading_days.py`) — a US closure must not move the UK or Canadian legs, since the book spans US/UK/CA and they share no calendar:
+
+- Sessions are derived from the observed price bars, not a holiday library — no dependency to keep patched, correct for every venue in the panel, and it catches one-off closures published calendars miss.
+- A shut target falls back to the **prior** session (Thursday → Wednesday), and only then forward (→ Friday). Backwards wins because that close is already known when the target arrives.
+- The nominal date stays the forecast's identity (filename, ledger primary key); the resolved date rides alongside as the per-row `target_trade_date` column.
+- The **backtest** needs no such handling: `resample("W-THU").last()` bins Friday→Thursday and takes the last available bar, so a shut Thursday already resolves to Wednesday's close. It can never fall forward to Friday — that is the next bin. Changing the binning would alter every feature and target while leaving the retrain fingerprint's date index identical, silently mixing vintages across a resumed run.

@@ -138,12 +138,50 @@ def extract_picks(forecast: pd.DataFrame, n_per_side: int = 10) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=COLUMNS)
 
 
+# How far back a per-ticker close may be carried to stand in for a missing one.
+# A week of sessions absorbs any exchange holiday while stopping a delisted or
+# long-suspended name from dragging a stale price into a return.
+_MAX_STALE_SESSIONS = 5
+
+
+def _asof_close(close: pd.DataFrame, when: pd.Timestamp, tickers: pd.Index) -> pd.Series:
+    """Last close on/before `when`, per ticker, bounded by `_MAX_STALE_SESSIONS`.
+
+    Resolved per ticker rather than per date because a multi-region panel has no
+    single calendar. On US Thanksgiving the date row exists — the LSE and TSX
+    print — but every US name is NaN, so taking one whole row would score the
+    entire US book unevaluable.
+    """
+    window = close.loc[:when]
+    if window.empty:
+        return pd.Series(np.nan, index=tickers, dtype="float64")
+    return window.tail(_MAX_STALE_SESSIONS).reindex(columns=tickers).ffill().iloc[-1]
+
+
+def _period_return(
+    close: pd.DataFrame, as_of: pd.Timestamp, target: pd.Timestamp, tickers: list
+) -> pd.Series:
+    """Close-to-close return per row of `tickers` (which may repeat a name).
+
+    Returns are computed once per distinct ticker and then broadcast back onto
+    the caller's row order — a ticker can appear in several scopes of the same
+    forecast, and dividing two series that share duplicate index labels would
+    otherwise fan out into a cartesian product.
+    """
+    uniq = pd.Index(pd.unique(pd.Index(tickers)))
+    start = _asof_close(close, as_of, uniq)
+    end = _asof_close(close, target, uniq)
+    return ((end / start) - 1.0).reindex(tickers)
+
+
 def evaluate_picks(picks: pd.DataFrame, close: pd.DataFrame | None) -> pd.DataFrame:
     """Fill realized_ret / signed_ret / correct / evaluable from a close panel.
 
-    Realized return is close-to-close from the latest trading day <= as_of to
-    the latest trading day <= target, and only counts as evaluable once a close
-    on/after the target date exists in the cache (no partial holding periods).
+    Realized return is close-to-close from the last session <= as_of to the last
+    session <= target, resolved per ticker so each region falls back onto its own
+    calendar when its exchange is shut on either endpoint. A week only counts as
+    evaluable once the panel extends to the target date (no partial holding
+    periods) and both endpoint closes are found within `_MAX_STALE_SESSIONS`.
     """
     picks = picks.copy()
     if close is None or close.empty or picks.empty:
@@ -153,17 +191,15 @@ def evaluate_picks(picks: pd.DataFrame, close: pd.DataFrame | None) -> pd.DataFr
     for (as_of_s, target_s), grp in picks.groupby(["as_of_date", "target_date"]):
         as_of = pd.Timestamp(as_of_s)
         target = pd.Timestamp(target_s)
-        as_of_actual = avail[avail <= as_of].max() if (avail <= as_of).any() else None
-        target_actual = avail[avail <= target].max() if (avail <= target).any() else None
-        # Strict: need a real close on/after target, and the as-of close present.
-        if target_actual is None or target_actual < target:
-            continue
-        if as_of_actual is None or as_of_actual < as_of:
+        # The holding period is closed once the panel extends to the target.
+        # Testing the panel's extent — rather than requiring the target date to
+        # be present in the index — is what lets a holiday target resolve: when
+        # every covered exchange is shut there is no such row at all, and the
+        # previous exact-match test left that week pending forever.
+        if len(avail) == 0 or avail.max() < target or avail.min() > as_of:
             continue
         tickers = grp["ticker"].tolist()
-        start = close.loc[as_of_actual].reindex(tickers)
-        end = close.loc[target_actual].reindex(tickers)
-        ret = (end / start) - 1.0
+        ret = _period_return(close, as_of, target, tickers)
         ret.index = grp.index  # align to row index for assignment
         signed = np.where(grp["side"].values == "LONG", ret.values, -ret.values)
         picks.loc[grp.index, "realized_ret"] = ret.values

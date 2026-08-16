@@ -329,11 +329,12 @@ model:
       # there LightGBM was the WEAKEST member with room to improve, whereas on
       # this fork it is already among the strongest.
       #
-      # To finish the A/B: set false and re-run `python -m src.main`. Retrain
-      # checkpointing resumes from step 9 rather than restarting, since the
-      # fingerprint now covers member hyperparameters and the 8 completed
-      # bag-OFF bundles are still on disk.
-      enabled: true
+      # TEMPORARILY false 2026-08-16: resuming the isolation A/B's control arm.
+      # This MUST stay false for the resume to work — the fingerprint covers member
+      # hyperparameters, so flipping it to true would invalidate the 8 completed
+      # bag-OFF bundles and silently restart as a bag-ON run instead of resuming.
+      # Set back to true (or to whichever arm wins) once the A/B reports.
+      enabled: false
       backend: modal           # modal (fan out across CPU containers) | local
       n_workers: 10            # modal: number of parallel CPU containers
       n_candidates: 200
@@ -393,6 +394,29 @@ diagnostics:
   weekday_signals: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
   run_weekday_effect: false    # set false to skip the 5x retrain (~5-10 min)
   shap_test_weeks: 26          # how many recent weeks to feed into SHAP (denser beeswarm matches paper p.7)
+
+deepdive:
+  # Per-name research over the live picks (src/research, "Deep dive" page).
+  # Thursday only: Wed/Fri have their own bundles, but Thursday is the day this
+  # book is traded, and researching all three would triple the API cost for
+  # names nobody takes a position in. The CLI still accepts --signal-day.
+  signal_day: "THU"
+  top_n: 20                   # names per side per region
+  max_top_n: 20               # hard cap — a full book is 20 x 2 sides x 3 regions = 120 names
+  sides: ["long", "short"]
+  regions: ["US", "UK", "CA"]
+  news_days: 30               # news lookback window
+  news_max_results: 6         # Tavily results per name
+  # session = the running Claude Code session writes the briefs (free, stronger
+  #           model, but needs a human-driven session in the loop)
+  # api     = metered call per name via src/reporting/llm.py — use for cron
+  # none    = deterministic layer only, narratives left null
+  llm_backend: "session"
+  llm_model: "claude-haiku-4-5"   # only used when llm_backend == "api"
+  max_budget_usd: 1.00        # api backend aborts if the estimate exceeds this
+  max_workers: 4              # concurrent narrative calls (api backend)
+  rsi_period: 14
+  output_dir: "data/processed/deepdive"
 
 reporting:
   profile: "cheap"            # cheap | cheap-openai | mixed | quality | quality-openai

@@ -24,3 +24,11 @@ seaborn>=0.13.0
 
 pyyaml>=6.0              # src/config.load_config
 python-dotenv>=1.0.0     # src/data/fetch.py imports load_dotenv at module level
+
+# Deep dive page. Rendering the committed JSON artifact needs none of these —
+# they are only imported when a refresh is unlocked with DEEPDIVE_ALLOW_REFRESH=1
+# and the API keys are set as Space secrets. Both imports are lazy, so the page
+# still renders if the install is skipped.
+requests>=2.31.0
+tavily-python>=0.5.0
+anthropic>=0.40.0        # only for deepdive.llm_backend == "api"

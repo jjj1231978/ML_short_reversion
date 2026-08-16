@@ -1,7 +1,17 @@
-"""Live-inference entry point: forecast the next Wednesday's long/short lists.
+"""Live-inference entry point: forecast the next signal day's long/short lists.
+
+The traded signal day is **Thursday** — the default, the day the backtest is fit
+on, and the only day whose bundles and forecasts are maintained. `--signal-day`
+still accepts the other weekdays for research (each keeps its own bundle
+namespace), but nothing routine generates them.
+
+Where the signal day falls on an exchange holiday the book trades the session
+before it (Wednesday), or the one after (Friday) if that week opens with the
+closure. That resolution is per region — a US closure does not move the UK or
+Canadian legs — and is recorded per row as `target_trade_date`.
 
 Usage:
-    python -m src.predict                         # forecast next Wed, retrain if cadence elapsed
+    python -m src.predict                         # forecast next Thu, retrain if cadence elapsed
     python -m src.predict --no-retrain            # never retrain (load latest bundle, error if none)
     python -m src.predict --force-retrain         # always refit before predicting
     python -m src.predict --top-n 10              # how many names per side (default 10)
@@ -13,7 +23,7 @@ Lifecycle vs `src.main`:
     persists a model bundle at every retrain step (under
     `data/processed/models/`).
   - `python -m src.predict` does NOT replay history. It pulls fresh FMP data,
-    builds features through the most recent Wednesday close, then either:
+    builds features through the most recent signal-day close, then either:
       * loads the latest saved bundle and scores that one cross-section, or
       * (if `retrain_freq` weeks have elapsed since the last persisted retrain)
         retrains all configured ensemble members on the most-recent train/val
@@ -21,7 +31,7 @@ Lifecycle vs `src.main`:
   - Output: top-N long + top-N short ranked by ensemble prediction, with the
     same eligibility filter (ADV floor + price floor + PIT US membership +
     ex-financials) that the backtest applies. Persisted to
-    `data/processed/forecasts/{target_wednesday}.parquet`.
+    `data/processed/forecasts/{signal_day}/{target_date}.parquet`.
 
 A cold start (no bundles on disk) requires either `python -m src.main` first,
 or `--force-retrain` (will fit on the latest window and persist).
@@ -54,6 +64,7 @@ from src.data.universe import (
 from src.features.build import build_feature_matrix
 from src.features.neutralize import neutralize_stacked
 from src.features.regime import build_and_save_macro_regimes, load_macro_regimes
+from src.lib.trading_days import resolve_session, sessions_by_group
 from src.model.ensemble import combine_predictions
 from src.model.persistence import (
     list_bundles,
@@ -79,10 +90,63 @@ WEEKDAY_INDEX_TO_NAME = {0: "Monday", 1: "Tuesday", 2: "Wednesday", 3: "Thursday
 # ---------------------------------------------------------------------------
 
 def _next_signal_day(today: pd.Timestamp, signal_day: str) -> pd.Timestamp:
-    """Most recent or upcoming target weekday >= today. If today IS that weekday, use today."""
+    """Most recent or upcoming target weekday >= today. If today IS that weekday, use today.
+
+    Pure calendar arithmetic — the result can land on an exchange holiday. Use
+    `_resolve_region_targets` to turn a nominal date into a tradeable one.
+    """
     target_idx = WEEKDAY_CODE_TO_INDEX[signal_day.upper()]
     offset = (target_idx - today.weekday()) % 7
     return (today + pd.Timedelta(days=offset)).normalize()
+
+
+def _resolve_region_targets(
+    close: pd.DataFrame, region_map: dict, nominal: pd.Timestamp
+) -> dict[str, pd.Timestamp]:
+    """Per-region tradeable date for a nominal signal-day target.
+
+    The target is a weekly-bin label produced by calendar arithmetic, so it can
+    fall on a day a given exchange is shut — US Thanksgiving, a UK bank holiday,
+    Canada Day. Each region resolves independently against its own observed
+    sessions, because a book spanning US/UK/CA has no single calendar: the US
+    can be closed on a Thursday the LSE and TSX both trade through.
+
+    Falls back to the session before the target (i.e. Wednesday for a shut
+    Thursday) and only then to the one after (Friday), per `resolve_session`.
+
+    Regions whose target cannot be resolved inside that window — including the
+    normal case of a target in the future, whose bars do not exist yet — keep
+    the nominal date. That is the honest answer: the forecast is *for* the
+    nominal bin, and a genuine closure will be picked up when the picks are
+    evaluated against real bars.
+    """
+    if close is None or close.empty or not region_map:
+        return {}
+
+    nominal = pd.Timestamp(nominal).normalize()
+    per_region = sessions_by_group(close, region_map)
+    resolved: dict[str, pd.Timestamp] = {}
+    for region, days in per_region.items():
+        # Only treat this as a closure if the panel actually covers the target
+        # week; an unresolvable future date just means the bars are not in yet.
+        if len(days) == 0 or days.max() < nominal:
+            resolved[region] = nominal
+            continue
+        actual = resolve_session(nominal, days)
+        if actual is None:
+            log.warning(
+                f"{region}: no session within ±3d of target {nominal.date()}; "
+                "keeping the nominal date."
+            )
+            resolved[region] = nominal
+        else:
+            resolved[region] = actual
+            if actual != nominal:
+                log.info(
+                    f"{region}: target {nominal.date()} is not a session — "
+                    f"trading date resolves to {actual.date()}."
+                )
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -518,11 +582,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-refresh-fundamentals", action="store_true",
                         help="Skip the per-ticker fundamentals refresh — compute "
                              "ratios from cached quarterly parquets only.")
-    parser.add_argument("--signal-day", default="WED",
+    parser.add_argument("--signal-day", default="THU",
                         choices=["MON", "TUE", "WED", "THU", "FRI"],
-                        help="Rebalance weekday. Each value gets its own model "
-                             "bundle namespace (data/processed/models/{day}/) and "
-                             "forecast output directory (data/processed/forecasts/{day}/).")
+                        help="Rebalance weekday (default THU — the day this book "
+                             "is traded and the day the backtest is fit on). Each "
+                             "value gets its own model bundle namespace "
+                             "(data/processed/models/{day}/) and forecast output "
+                             "directory (data/processed/forecasts/{day}/). Other "
+                             "days remain runnable for research, but are not "
+                             "maintained.")
     args = parser.parse_args(argv)
 
     signal_day = args.signal_day.upper()
@@ -572,6 +640,12 @@ def main(argv: list[str] | None = None) -> int:
         f"As-of (latest completed {signal_day} bin): {latest_wed.date()}  →  "
         f"target {signal_day} {target_wed.date()}"
     )
+    # The target is a bin label and may fall on an exchange holiday. Resolve the
+    # date each region can actually trade (target → prior session → next), and
+    # carry it alongside the nominal date rather than replacing it: the nominal
+    # date identifies the forecast (filename, ledger key) and must stay stable
+    # and comparable across regions.
+    region_target = _resolve_region_targets(close, region_map, target_wed)
 
     # Decide retrain vs load
     retrain_freq = cfg["model"]["retrain_freq"]
@@ -696,6 +770,13 @@ def main(argv: list[str] | None = None) -> int:
     full = df.copy()
     full["as_of_date"] = latest_wed
     full["target_date"] = target_wed
+    # Per-region tradeable date. Equals target_date except where that region's
+    # exchange is shut on the target, in which case it points at the session
+    # actually used to close the position.
+    full["target_trade_date"] = (
+        full["region"].map(region_target).fillna(target_wed)
+        if "region" in full.columns else target_wed
+    )
     full["signal_day"] = signal_day
     full["bundle_retrain_date"] = bundle_retrain_date  # model vintage / provenance
     # Rank within (region, eligible-only): 1 = top long, N = bottom short. NaN

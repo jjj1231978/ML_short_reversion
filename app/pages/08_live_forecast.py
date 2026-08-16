@@ -8,25 +8,21 @@ the CLI.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pandas as pd
 import streamlit as st
 
+from app.lib.forecasts import (
+    SIGNAL_DAY_LABELS,
+    code_for_label,
+    default_day_index,
+    list_forecasts,
+)
 from src.backtest.return_calibration import (
     annualize_weekly,
     expected_excess_return,
     load_calibration,
 )
 from src.config import PROCESSED_DIR
-
-FORECASTS_ROOT = PROCESSED_DIR / "forecasts"
-
-SIGNAL_DAY_LABELS = {
-    "WED": "Wednesday",
-    "THU": "Thursday",
-    "FRI": "Friday",
-}
 
 st.title("Live forecast")
 st.caption(
@@ -40,44 +36,21 @@ st.caption(
 )
 
 
-def _list_forecasts(signal_day: str) -> list[Path]:
-    """Return parquet files for a given signal day, sorted newest first."""
-    d = FORECASTS_ROOT / signal_day
-    if not d.exists():
-        return []
-    return sorted(d.glob("*.parquet"), reverse=True)
-
-
-def _default_day_index() -> int:
-    """Default the selector to the signal day with the most recent forecast
-    file (by target date), so a reload lands on the day most recently run
-    instead of always snapping back to Wednesday."""
-    codes = list(SIGNAL_DAY_LABELS.keys())
-    latest: dict[str, str] = {}
-    for code in codes:
-        fs = _list_forecasts(code)
-        if fs:
-            latest[code] = fs[0].stem  # newest target date (YYYY-MM-DD)
-    if not latest:
-        return 0
-    return codes.index(max(latest, key=latest.get))
-
-
 with st.sidebar:
     st.header("Rebalance day")
     sd_label = st.selectbox(
         "Signal day",
         list(SIGNAL_DAY_LABELS.values()),
-        index=_default_day_index(),
+        index=default_day_index(),
         help=(
             "The weekday whose close is used as the as-of date for the "
             "forecast and the executed rebalance. Per the weekday-effect "
             "diagnostic, Thursday and Friday historically outperform Wednesday."
         ),
     )
-    sd_code = {v: k for k, v in SIGNAL_DAY_LABELS.items()}[sd_label]
+    sd_code = code_for_label(sd_label)
 
-    files = _list_forecasts(sd_code)
+    files = list_forecasts(sd_code)
     if not files:
         st.warning(
             f"No forecasts found for {sd_label}.\n\n"
@@ -116,6 +89,26 @@ m1.metric("Rebalance day", sd_label)
 m2.metric("As-of close", as_of_date.isoformat())
 m3.metric("Target close", target_date.isoformat())
 m4.metric("Eligible universe", f"{int(df['eligible'].sum()):,} / {len(df):,}")
+
+# Flag any region whose exchange is shut on the target, so the displayed target
+# close is not silently read as the date that region actually trades. Absent on
+# forecasts written before per-region holiday resolution existed.
+if "target_trade_date" in df.columns and "region" in df.columns:
+    shifted = (
+        df.loc[pd.to_datetime(df["target_trade_date"]).dt.date != target_date,
+               ["region", "target_trade_date"]]
+        .drop_duplicates("region")
+        .sort_values("region")
+    )
+    if not shifted.empty:
+        moves = ", ".join(
+            f"{r.region} → {pd.Timestamp(r.target_trade_date).date().isoformat()}"
+            for r in shifted.itertuples()
+        )
+        st.caption(
+            f"⚠️ {target_date.isoformat()} is a market holiday for: {moves}. "
+            "Those legs close on the date shown."
+        )
 
 st.divider()
 
