@@ -143,6 +143,7 @@ for ticker, rec in tickers.items():
             "rank": meta.get("rank"),
             "prediction": meta.get("prediction"),
             "industry": meta.get("industry"),
+            "sector": meta.get("sector"),
             "alignment": tech.get("alignment", "neutral"),
             "verdict_label": tech.get("verdict_label", DASH),
             "rsi14": tech.get("rsi14"),
@@ -264,6 +265,42 @@ st.caption(
        if hidden else "")
 )
 st.plotly_chart(fig_moves, use_container_width=True)
+
+# --- sector mix ---------------------------------------------------------------
+
+st.subheader("Sector mix of the picks")
+fig_sector, sector_counts = dp.sector_mix(view)
+if fig_sector is None:
+    st.info("No sector data on the names currently selected.")
+else:
+    net = (
+        sector_counts.pivot_table(
+            index="sector", columns="side", values="n", aggfunc="sum", fill_value=0
+        )
+        .reindex(columns=["LONG", "SHORT"], fill_value=0)
+    )
+    tilt = (net["LONG"] - net["SHORT"]).sort_values()
+    lead = (
+        f"Largest net tilts across the selection: **{tilt.index[-1]}** "
+        f"{tilt.iloc[-1]:+d} and **{tilt.index[0]}** {tilt.iloc[0]:+d} "
+        "(longs minus shorts)."
+        if len(tilt) >= 2 and (tilt.iloc[-1] or tilt.iloc[0])
+        else "No sector carries a meaningful net tilt in this selection."
+    )
+    st.caption(
+        "Shorts extend left of zero, longs right; one panel per region, sectors "
+        "ordered by net tilt. Factors are neutralised against the **industry** "
+        "median, which strips industry effects out of the scores but does not "
+        f"stop the top-N cut from clustering in a sector. {lead}"
+    )
+    st.plotly_chart(fig_sector, use_container_width=True)
+    with st.expander("Sector counts as a table"):
+        st.dataframe(
+            net.assign(NET=net["LONG"] - net["SHORT"])
+               .sort_values("NET", ascending=False)
+               .rename(columns={"LONG": "Long", "SHORT": "Short", "NET": "Net"}),
+            use_container_width=True,
+        )
 
 # --- screening table ----------------------------------------------------------
 
