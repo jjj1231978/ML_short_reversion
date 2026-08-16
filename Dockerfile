@@ -5,7 +5,12 @@
 # src/config.py resolves PROJECT_ROOT from __file__, so the whole repo must be
 # copied to a single WORKDIR for data/processed to resolve.
 
-FROM python:3.11-slim
+# Pinned to match the dev venv (3.12). When these drift, syntax that is valid
+# locally can be a SyntaxError here and the page dies only when someone opens
+# it -- which is exactly how PEP 701 f-strings shipped broken once already.
+# deploy_hf.sh reads this line and parses app/ + src/ under this version before
+# pushing, so keep the `FROM python:X.Y-slim` shape intact.
+FROM python:3.12-slim
 
 WORKDIR /app
 

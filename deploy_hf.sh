@@ -23,7 +23,17 @@ SPACE_URL="https://huggingface.co/spaces/JJ-JIN12345/ml-short-reversion"
 HF_USER="JJ-JIN12345"
 WT="$(mktemp -d)/hfdeploy"
 
-if [ "${1:-}" = "--commit" ]; then
+DO_COMMIT=0
+SKIP_SYNTAX=0
+for arg in "$@"; do
+    case "$arg" in
+        --commit)             DO_COMMIT=1 ;;
+        --skip-syntax-check)  SKIP_SYNTAX=1 ;;
+        *) echo "unknown flag: $arg (want --commit / --skip-syntax-check)" >&2; exit 2 ;;
+    esac
+done
+
+if [ "$DO_COMMIT" = "1" ]; then
     # Only the whitelisted viewer artifacts in .gitignore can land here.
     git add data/processed notebooks/figures 2>/dev/null || true
     if ! git diff --cached --quiet; then
@@ -36,6 +46,40 @@ fi
 if ! git diff --quiet || ! git diff --cached --quiet; then
     echo "ERROR: working tree is dirty. Commit first, or run with --commit." >&2
     exit 1
+fi
+
+# Parse every file the Space executes under the Python the Space actually runs.
+# The dev venv may be newer, in which case `python -m py_compile` and even a
+# streamlit AppTest run locally prove nothing: PEP 701 f-strings parse on 3.12
+# and raise "unterminated string literal" on 3.11. Streamlit compiles a page
+# lazily on first view, so such a break is invisible until a user clicks it.
+# The tree is clean by the check above, so the working copy == what gets pushed.
+if [ "$SKIP_SYNTAX" = "0" ]; then
+    PYVER=$(grep -oP '^FROM python:\K[0-9]+\.[0-9]+' Dockerfile)
+    LOCALVER=$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+    CHECK='
+import ast, pathlib, sys
+bad = []
+for p in sorted(list(pathlib.Path("app").rglob("*.py")) + list(pathlib.Path("src").rglob("*.py"))):
+    try:
+        ast.parse(p.read_text(), str(p))
+    except SyntaxError as e:
+        bad.append("  %s:%s  %s" % (p, e.lineno, e.msg))
+if bad:
+    sys.stderr.write("ERROR: these files do not parse under Python %d.%d:\n%s\n"
+                     % (sys.version_info[0], sys.version_info[1], "\n".join(bad)))
+    raise SystemExit(1)
+'
+    if [ "$LOCALVER" = "$PYVER" ]; then
+        python -c "$CHECK"
+    elif command -v docker >/dev/null 2>&1; then
+        docker run --rm -v "$PWD":/w -w /w "python:$PYVER-slim" python -c "$CHECK"
+    else
+        echo "ERROR: cannot check syntax for Python $PYVER (venv is $LOCALVER, no docker)." >&2
+        echo "       Match the venv to $PYVER, install docker, or --skip-syntax-check." >&2
+        exit 1
+    fi
+    echo "syntax OK for Python $PYVER"
 fi
 
 : "${HF_API_KEY:=$(grep -oP '^HF_API_KEY=\K.*' .env | tr -d '"'"'"'')}"
@@ -73,6 +117,27 @@ trap 'git worktree remove --force "$WT" 2>/dev/null || true; rm -f "$ASKPASS"' E
 (
     cd "$WT"
     git checkout -q --orphan hf-main
+
+    # Publish only what the Space executes. This is a throwaway worktree, so
+    # these deletions never touch your checkout.
+    #
+    # tests/ is the reason this exists: HF's secret scanner reads a pytest
+    # function named `test_` + ~35 chars as a Lob API key and flags the Space
+    # on every deploy. Renaming the offenders does not hold -- the file already
+    # carries a comment from the last time, and six names still match. Not
+    # shipping the directory ends the false positives permanently, and the
+    # Space never ran the suite anyway.
+    #
+    # scripts/ holds the IBKR order-placement path; .specify/ is spec prose.
+    # Neither is imported by app/ (which pulls only src.config,
+    # src.backtest.{portfolio,live_trackrecord,return_calibration} and
+    # src.research.{deepdive,technicals}), so both are dead weight on the Hub.
+    #
+    # notebooks/figures MUST stay: app/pages/03_shap.py renders the persisted
+    # SHAP PNGs from there. Only the .ipynb files go.
+    rm -rf tests scripts .specify
+    find notebooks -maxdepth 1 -name '*.ipynb' -delete 2>/dev/null || true
+
     git add -A
     # Unchanged files skip the LFS clean filter, so force it across the tree —
     # without this, previously-committed PNGs stay raw blobs and HF rejects them.
