@@ -10,6 +10,11 @@ Examples:
     # Daily refresh (incremental — extends cache forward only):
     python -m src.data backfill
 
+    # Periodic fuller refresh — also re-pulls index membership (so index
+    # adds/drops enter the universe) and tops up grades for already-cached
+    # tickers (so UPDOWN1W_RATINGS picks up new rating events):
+    python -m src.data backfill --regions US,UK,CA --refresh-membership --topup-grades
+
     # Rebuild a specific ticker (deletes its parquet first):
     python -m src.data backfill --tickers AAPL --force
 """
@@ -66,10 +71,30 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Delete existing per-ticker parquets before re-fetching. Use with --tickers.",
     )
+    bf.add_argument(
+        "--refresh-membership",
+        action="store_true",
+        help=(
+            "Re-fetch index membership from FMP instead of reading the cached "
+            "constituent tables. Without this the universe is frozen at whatever "
+            "the last refresh saw, so index adds/drops since then are missed."
+        ),
+    )
     bf.add_argument("--skip-prices", action="store_true", help="Skip the equity-price fetch step.")
     bf.add_argument("--skip-benchmarks", action="store_true", help="Skip the regional benchmark-index fetch.")
     bf.add_argument("--skip-fundamentals", action="store_true")
     bf.add_argument("--skip-grades", action="store_true")
+    bf.add_argument(
+        "--topup-grades",
+        action="store_true",
+        help=(
+            "Also re-pull grades for tickers ALREADY in the cache, not just the "
+            "missing ones. FMP's /grades endpoint has no 'from' cutoff, so without "
+            "this an incremental run leaves every cached ticker frozen at whatever "
+            "the last full fetch saw — new rating events since then never land, and "
+            "UPDOWN1W_RATINGS goes silently stale. Costs one small call per ticker."
+        ),
+    )
     bf.add_argument("--verbose", "-v", action="store_true")
 
     val = sub.add_parser("validate", help="Audit cache for thin coverage and rename conflicts.")
@@ -107,7 +132,7 @@ def _delete_for_force(tickers: list[str]) -> None:
                 logging.info(f"Deleted {f}")
 
 
-def _build_universe(regions: list[str], cfg_data: dict) -> list[str]:
+def _build_universe(regions: list[str], cfg_data: dict, refresh: bool = False) -> list[str]:
     """Step 1-3: fetch membership for each region, return union of symbols."""
     from src.data.fmp import fetch_index_membership_fmp
 
@@ -119,7 +144,9 @@ def _build_universe(regions: list[str], cfg_data: dict) -> list[str]:
         idx = region_to_index.get(region.upper())
         if not idx:
             raise ValueError(f"Unknown region: {region!r}. Use US, UK, or CA.")
-        membership = fetch_index_membership_fmp(idx, rate_limit_per_min=rate_limit)
+        membership = fetch_index_membership_fmp(
+            idx, rate_limit_per_min=rate_limit, refresh=refresh
+        )
         all_symbols.update(membership["symbol"].astype(str).tolist())
         logging.info(f"  {region}: {len(membership)} membership rows ({membership['symbol'].nunique()} unique)")
     return sorted(all_symbols)
@@ -149,7 +176,7 @@ def cmd_backfill(args: argparse.Namespace) -> int:
 
     # Step 1-3: universe membership
     if tickers_arg is None:
-        tickers = _build_universe(regions, cfg_data)
+        tickers = _build_universe(regions, cfg_data, refresh=args.refresh_membership)
         logging.info(f"Universe (union across {regions}): {len(tickers)} unique tickers")
     else:
         tickers = tickers_arg
@@ -196,7 +223,11 @@ def cmd_backfill(args: argparse.Namespace) -> int:
     if not args.skip_grades:
         from src.data.fetch import fetch_analyst_grades
 
-        fetch_analyst_grades(tickers, rate_limit_per_min=rate_limit)
+        fetch_analyst_grades(
+            tickers,
+            rate_limit_per_min=rate_limit,
+            topup_existing=args.topup_grades,
+        )
 
     logging.info("FMP backfill complete.")
     return 0

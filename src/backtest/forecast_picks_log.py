@@ -317,9 +317,22 @@ def _hp_from_models(models: dict) -> dict:
                 hp["rf"] = {"n_est": p.get("n_estimators"), "depth": p.get("max_depth"),
                             "min_leaf": p.get("min_samples_leaf"), "max_feat": p.get("max_features")}
             elif name == "lightgbm":
-                p = getattr(m, "params", {}) or {}
-                hp["lgb"] = {"leaves": p.get("num_leaves"), "depth": p.get("max_depth"),
-                             "lr": p.get("learning_rate"), "rounds": getattr(m, "num_trees", lambda: None)()}
+                # A random-ensemble LGBBag has no params/num_trees of its own —
+                # reading them off the bag would record an all-null lgb entry and
+                # make every model version's lgb architecture hash identical.
+                # Record the bag shape plus its best-IC member's params instead.
+                boosters = getattr(m, "boosters", None)
+                if boosters:
+                    best = boosters[0]  # bag is ordered best val rank-IC first
+                    p = getattr(best, "params", {}) or {}
+                    hp["lgb"] = {"bag": len(boosters), "leaves": p.get("num_leaves"),
+                                 "depth": p.get("max_depth"), "lr": p.get("learning_rate"),
+                                 "rounds": getattr(best, "num_trees", lambda: None)()}
+                else:
+                    p = getattr(m, "params", {}) or {}
+                    hp["lgb"] = {"leaves": p.get("num_leaves"), "depth": p.get("max_depth"),
+                                 "lr": p.get("learning_rate"),
+                                 "rounds": getattr(m, "num_trees", lambda: None)()}
             elif name == "xgboost":
                 cfg = json.loads(m.save_config())
                 tp = cfg.get("learner", {}).get("gradient_booster", {}).get("tree_train_param", {})

@@ -282,7 +282,9 @@ def _build_features_and_close(
         if macro_df is not None and macro_cfg.get("hmm_enabled", True):
             regimes_path = PROCESSED_DIR / "macro_regimes.parquet"
             macro_regimes_df = load_macro_regimes(
-                regimes_path, expected_macros=set(macro_df.columns)
+                regimes_path,
+                expected_macros=set(macro_df.columns),
+                expected_end=macro_df.index.max(),
             )
             if macro_regimes_df is None or macro_cfg.get("hmm_refit", False):
                 try:
@@ -348,7 +350,10 @@ def _retrain_with_close(
     members = _resolve_members(cfg)
     combine_method = model_cfg.get("ensemble", {}).get("combine", "rank_mean")
 
-    target = build_target(close, signal_day=signal_day)
+    target = build_target(
+        close, signal_day=signal_day,
+        exec_lag_days=cfg["backtest"].get("execution_lag_days", 1),
+    )
     dates = features.index.get_level_values("date").unique().sort_values()
     if latest_wed not in dates:
         prior = dates[dates <= latest_wed]
@@ -415,6 +420,15 @@ def _predict_cross_section(
         preds = pd.Series(pred_fn(models[m], X), index=X.index, name="prediction")
         per_model[m] = preds
     if len(members) > 1:
+        # ir_weighted needs per-week validation ICs and stack needs realized
+        # target history; neither exists when scoring a single forward week, so
+        # the live forecast degrades to the equal-weight rank mean.
+        if combine_method in ("ir_weighted", "stack"):
+            log.warning(
+                "combine=%s unsupported in live single-week scoring; "
+                "using rank_mean for the forecast.", combine_method
+            )
+            combine_method = "rank_mean"
         return combine_predictions(per_model, method=combine_method)
     return per_model[members[0]].copy()
 
@@ -601,6 +615,23 @@ def main(argv: list[str] | None = None) -> int:
     preds = preds.droplevel("date")
     preds.name = "prediction"
 
+    # Per-pick feature attribution: name the 1-2 factors that moved each score
+    # the most (SHAP over the tree members). Best-effort — a failure here must
+    # not block the forecast.
+    try:
+        from src.diagnostics.explain import explain_cross_section
+
+        X_explain = (
+            week_features.reindex(columns=feature_columns)
+            .fillna(0.0)
+            .droplevel("date")
+        )
+        commentary = explain_cross_section(models, members, X_explain, top_k=2)
+        log.info("Computed per-pick commentary for %d tickers", len(commentary))
+    except Exception as e:  # noqa: BLE001
+        log.warning(f"Commentary generation failed: {e}")
+        commentary = pd.Series("", index=preds.index, name="commentary")
+
     # Eligibility filter for the target Wednesday (use latest_wed as the
     # eligibility key since that's the as-of date for the position decision).
     eligible = _build_target_eligibility(
@@ -614,6 +645,7 @@ def main(argv: list[str] | None = None) -> int:
         "eligible": eligible,
         "region": [region_map.get(t, "?") for t in preds.index],
         "industry": [industry_map.get(t, "?") for t in preds.index],
+        "commentary": commentary.reindex(preds.index).fillna(""),
     })
     df.index.name = "ticker"
 
@@ -714,6 +746,9 @@ def _print_side(title: str, df: pd.DataFrame) -> None:
             f"  {row['rank']:>4} {ticker:<10} {row['region']:<4} "
             f"{row['prediction']:>10.4f}  {row['industry']}"
         )
+        comment = row.get("commentary", "")
+        if comment:
+            print(f"       ↳ {comment}")
 
 
 if __name__ == "__main__":

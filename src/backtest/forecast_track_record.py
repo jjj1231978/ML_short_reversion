@@ -43,6 +43,36 @@ def _safe_ret(close: pd.DataFrame, t_from: pd.Timestamp, t_to: pd.Timestamp, tic
     return (end / start) - 1.0
 
 
+def _lagged_ret(
+    close: pd.DataFrame, signal_label: pd.Timestamp, target_label: pd.Timestamp,
+    tickers: list[str],
+) -> tuple[pd.Series, pd.Timestamp | None, pd.Timestamp | None]:
+    """Per-ticker *implementable* return: entry = each ticker's first valid close
+    strictly after the signal label, exit = its first valid close strictly after
+    the target label. Respects each name's own trading calendar (US is closed on
+    Juneteenth while LSE/TSX trade), so a US name's exit snaps to its next US
+    session rather than a foreign-exchange date. Returns (ret, modal_entry,
+    modal_exit) where the modal dates are just for display."""
+    rets: dict[str, float] = {}
+    entries: list[pd.Timestamp] = []
+    exits: list[pd.Timestamp] = []
+    sub = close.reindex(columns=tickers)
+    for t in tickers:
+        s = sub[t].dropna()
+        e_idx = s.index[s.index > signal_label]
+        x_idx = s.index[s.index > target_label]
+        if len(e_idx) == 0 or len(x_idx) == 0:
+            rets[t] = float("nan")
+            continue
+        entry, exit_ = e_idx[0], x_idx[0]
+        entries.append(entry)
+        exits.append(exit_)
+        rets[t] = float(s.loc[exit_] / s.loc[entry] - 1.0)
+    modal_entry = pd.Series(entries).mode().iloc[0] if entries else None
+    modal_exit = pd.Series(exits).mode().iloc[0] if exits else None
+    return pd.Series(rets), modal_entry, modal_exit
+
+
 def evaluate_forecast(
     forecast: pd.DataFrame,
     close: pd.DataFrame,
@@ -80,6 +110,17 @@ def evaluate_forecast(
 
     rets = _safe_ret(close, as_of_actual, target_actual, list(forecast.index))
 
+    # Lagged ("implementable") return: the backtest enforces a 1-session
+    # execution lag on BOTH endpoints, so you enter the session after the signal
+    # close and exit the session after the target close — matching build_target
+    # / the backtest P&L. The first realized return lands two sessions after the
+    # signal (e.g. Thursday signal → Friday entry → first return Monday).
+    # Computed per-ticker (each name on its own exchange calendar); a name whose
+    # next session hasn't traded yet stays NaN until it does.
+    rets_lag, entry_lag_actual, exit_lag_actual = _lagged_ret(
+        close, as_of_actual, target_actual, list(forecast.index)
+    )
+
     eligible = forecast[forecast["eligible"]].copy()
 
     out: dict[str, Any] = {
@@ -87,8 +128,22 @@ def evaluate_forecast(
         "evaluable": True,
         "as_of_used": as_of_actual,
         "target_used": target_actual,
+        "entry_lag_used": entry_lag_actual,
+        "exit_lag_used": exit_lag_actual,
         "n_eligible_total": int(len(eligible)),
     }
+
+    def _one_basket(longs: pd.DataFrame, shorts: pd.DataFrame, rets_s: pd.Series,
+                    prefix: str, suffix: str) -> None:
+        long_r = rets_s.reindex(longs.index)
+        short_r = rets_s.reindex(shorts.index)
+        out[f"{prefix}_long_ret{suffix}"] = float(long_r.mean())
+        out[f"{prefix}_short_ret{suffix}"] = float(short_r.mean())
+        out[f"{prefix}_ls_ret{suffix}"] = float(long_r.mean() - short_r.mean())
+        long_hits = (long_r > 0).sum()
+        short_hits = (short_r < 0).sum()
+        valid = (~long_r.isna()).sum() + (~short_r.isna()).sum()
+        out[f"{prefix}_hit_rate{suffix}"] = float((long_hits + short_hits) / valid) if valid else np.nan
 
     def _basket_metrics(grp: pd.DataFrame, prefix: str) -> None:
         if len(grp) < 2 * n_per_side:
@@ -96,15 +151,9 @@ def evaluate_forecast(
         ranked = grp.sort_values("prediction", ascending=False)
         longs = ranked.head(n_per_side)
         shorts = ranked.tail(n_per_side).iloc[::-1]
-        long_r = rets.reindex(longs.index)
-        short_r = rets.reindex(shorts.index)
-        out[f"{prefix}_long_ret"] = float(long_r.mean())
-        out[f"{prefix}_short_ret"] = float(short_r.mean())
-        out[f"{prefix}_ls_ret"] = float(long_r.mean() - short_r.mean())
-        long_hits = (long_r > 0).sum()
-        short_hits = (short_r < 0).sum()
-        valid = (~long_r.isna()).sum() + (~short_r.isna()).sum()
-        out[f"{prefix}_hit_rate"] = float((long_hits + short_hits) / valid) if valid else np.nan
+        # Same baskets (ranked at the signal close), two return windows.
+        _one_basket(longs, shorts, rets, prefix, "")          # no-lag: signal close → target
+        _one_basket(longs, shorts, rets_lag, prefix, "_lag")  # implementable: next session → target
         out[f"{prefix}_n_long"] = int(len(longs))
         out[f"{prefix}_n_short"] = int(len(shorts))
 

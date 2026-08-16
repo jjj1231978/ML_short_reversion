@@ -68,6 +68,7 @@ def alpha_decay_analysis(
     region_map: dict[str, str] | None = None,
     weekly_return_cap: float | None = None,
     cfg: dict | None = None,
+    signal_day: str = "WED",
 ) -> pd.DataFrame:
     """Test alpha decay by measuring IR at different execution lags.
 
@@ -90,13 +91,13 @@ def alpha_decay_analysis(
         DataFrame indexed by lag with metrics from compute_performance_metrics.
     """
     from src.backtest.portfolio import build_long_short_portfolio, compute_performance_metrics
-    from src.features.build import resample_to_wednesday
+    from src.features.build import resample_to_weekday
 
     results = []
     for lag in lags:
         # Shift close prices by lag days before computing returns
         shifted_close = close.shift(-lag)
-        weekly_ret = resample_to_wednesday(shifted_close).pct_change().shift(-1)
+        weekly_ret = resample_to_weekday(shifted_close, signal_day).pct_change().shift(-1)
         if weekly_return_cap is not None:
             weekly_ret = weekly_ret.clip(lower=-weekly_return_cap, upper=weekly_return_cap)
 
@@ -171,7 +172,7 @@ def weekday_effect_analysis(
             close, volume, market_close=market_close,
             fundamentals=fundamentals, cfg=cfg, signal_day=code,
         )
-        target = build_target(close, signal_day=code)
+        target = build_target(close, signal_day=code, exec_lag_days=exec_lag)
         features = neutralize_stacked(
             features,
             industry_map=industry_map,

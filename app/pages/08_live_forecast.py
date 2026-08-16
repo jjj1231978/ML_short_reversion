@@ -13,6 +13,11 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from src.backtest.return_calibration import (
+    annualize_weekly,
+    expected_excess_return,
+    load_calibration,
+)
 from src.config import PROCESSED_DIR
 
 FORECASTS_ROOT = PROCESSED_DIR / "forecasts"
@@ -27,7 +32,11 @@ st.title("Live forecast")
 st.caption(
     "Top-10 long and top-10 short picks for the next rebalance close. "
     "Switch the rebalance weekday in the sidebar — Wed/Thu/Fri each have "
-    "their own trained model and forecast file."
+    "their own trained model and forecast file. The **commentary** column "
+    "names the 1-2 factors (via SHAP over the tree members) that moved each "
+    "pick's score the most — e.g. *\"1-week reversal (R1W) high (pushes score "
+    "down)\"* reads as: the stock's recent 1-week return is high and the model "
+    "expects mean reversion to drag the forward return down."
 )
 
 
@@ -39,12 +48,27 @@ def _list_forecasts(signal_day: str) -> list[Path]:
     return sorted(d.glob("*.parquet"), reverse=True)
 
 
+def _default_day_index() -> int:
+    """Default the selector to the signal day with the most recent forecast
+    file (by target date), so a reload lands on the day most recently run
+    instead of always snapping back to Wednesday."""
+    codes = list(SIGNAL_DAY_LABELS.keys())
+    latest: dict[str, str] = {}
+    for code in codes:
+        fs = _list_forecasts(code)
+        if fs:
+            latest[code] = fs[0].stem  # newest target date (YYYY-MM-DD)
+    if not latest:
+        return 0
+    return codes.index(max(latest, key=latest.get))
+
+
 with st.sidebar:
     st.header("Rebalance day")
     sd_label = st.selectbox(
         "Signal day",
         list(SIGNAL_DAY_LABELS.values()),
-        index=0,
+        index=_default_day_index(),
         help=(
             "The weekday whose close is used as the as-of date for the "
             "forecast and the executed rebalance. Per the weekday-effect "
@@ -95,7 +119,35 @@ m4.metric("Eligible universe", f"{int(df['eligible'].sum()):,} / {len(df):,}")
 
 st.divider()
 
+# Translate the rank-mean prediction into an expected 1-week excess return
+# (the alpha the model predicts) via the backtest calibration curve. Optional —
+# the page degrades gracefully if the calibration artifact hasn't been built.
+_calib = load_calibration()
+has_exp_ret = _calib is not None
+if has_exp_ret:
+    df["exp_1w_excess"] = expected_excess_return(df["prediction"].values, _calib)
+
 eligible_only = df[df["eligible"]].copy()
+
+# Older forecast files predate the per-pick commentary column.
+has_commentary = "commentary" in df.columns
+_display_cols = (
+    ["prediction"]
+    + (["exp_1w_excess"] if has_exp_ret else [])
+    + ["industry"]
+    + (["commentary"] if has_commentary else [])
+)
+
+
+def _fmt_picks(frame: pd.DataFrame) -> pd.DataFrame:
+    """Stringify prediction (4dp) and expected excess return (signed %)."""
+    out = frame.copy()
+    if "prediction" in out:
+        out["prediction"] = out["prediction"].map(lambda x: f"{x:.4f}")
+    if "exp_1w_excess" in out:
+        out = out.rename(columns={"exp_1w_excess": "exp 1w excess"})
+        out["exp 1w excess"] = out["exp 1w excess"].map(lambda x: f"{x * 100:+.2f}%")
+    return out
 
 with st.sidebar:
     n_top = st.slider("Names per side per region", min_value=5, max_value=25, value=10, step=1)
@@ -110,26 +162,33 @@ st.caption(
     "Per-region top/bottom. Counts of eligible names: "
     + ", ".join(f"**{r}** {counts.get(r, 0)}" for r in regions_present)
 )
+if has_exp_ret:
+    lo = expected_excess_return([0.02], _calib)[0]
+    hi = expected_excess_return([0.98], _calib)[0]
+    st.caption(
+        "**exp 1w excess** = expected 1-week return *relative to the universe* "
+        "(the alpha the rank score implies), from the backtest calibration of "
+        "prediction rank → realized cross-sectional excess return. Longs are "
+        "positive, shorts negative. Strong picks span roughly "
+        f"{hi * 100:+.2f}% (top) to {lo * 100:+.2f}% (bottom) per week "
+        f"(≈ {annualize_weekly(hi) * 100:+.0f}% to {annualize_weekly(lo) * 100:+.0f}% "
+        "annualized). It is a historical average, not a per-name guarantee."
+    )
 
+# Long and short tables are stacked full-width (not side-by-side) so the
+# commentary column stays visible without horizontal scrolling.
 for region in regions_present:
     region_df = (
         eligible_only[eligible_only["region"] == region]
         .sort_values("prediction", ascending=False)
     )
     st.subheader(f"{region}")
-    c1, c2 = st.columns(2)
-    longs = region_df.head(n_top)[["prediction", "industry"]]
-    shorts = region_df.tail(n_top)[["prediction", "industry"]].iloc[::-1]
-    with c1:
-        st.markdown(f"**Top {n_top} long ({region})**")
-        ld = longs.copy()
-        ld["prediction"] = ld["prediction"].map(lambda x: f"{x:.4f}")
-        st.dataframe(ld, use_container_width=True)
-    with c2:
-        st.markdown(f"**Top {n_top} short ({region})**")
-        sd = shorts.copy()
-        sd["prediction"] = sd["prediction"].map(lambda x: f"{x:.4f}")
-        st.dataframe(sd, use_container_width=True)
+    longs = region_df.head(n_top)[_display_cols]
+    shorts = region_df.tail(n_top)[_display_cols].iloc[::-1]
+    st.markdown(f"**Top {n_top} long ({region})**")
+    st.dataframe(_fmt_picks(longs), use_container_width=True)
+    st.markdown(f"**Top {n_top} short ({region})**")
+    st.dataframe(_fmt_picks(shorts), use_container_width=True)
 
 st.divider()
 with st.expander("Combined global ranking (all regions pooled)"):
@@ -138,7 +197,13 @@ with st.expander("Combined global ranking (all regions pooled)"):
         "For reference only — heavy region tilt is expected because the "
         "cross-section is industry-neutralized but not region-neutralized."
     )
-    st.dataframe(pooled[["prediction", "region", "industry"]], use_container_width=True)
+    pooled_cols = (
+        ["prediction"]
+        + (["exp_1w_excess"] if has_exp_ret else [])
+        + ["region", "industry"]
+        + (["commentary"] if has_commentary else [])
+    )
+    st.dataframe(_fmt_picks(pooled[pooled_cols]), use_container_width=True)
 
 with st.expander("Filtered-out names (not eligible — failed ADV/price/PIT)"):
     ineligible = df[~df["eligible"]]

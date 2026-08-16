@@ -18,7 +18,12 @@ data/           — raw and processed data caches
 src/
   data/         — data acquisition (FMP for prices/fundamentals/grades/macro, Databento for high-freq prices, simfin legacy)
   features/     — factor computation, neutralization pipeline, HMM macro regimes
-  model/        — rolling-window ensemble training (xgb / lgbm / rf / mlp)
+  model/        — rolling-window ensemble training (xgb / lgbm / rf / mlp). LightGBM
+                  supports a random-hyperparameter ensemble (`model.lightgbm.random_ensemble`):
+                  per retrain, train N candidates → keep top-K by validation rank-IC →
+                  average (`LGBBag`). Modal CPU fan-out in `model/lgb_modal.py`. Ported
+                  from the ML_short_sentiment fork, where it ~2×'d the LGB member's IR
+                  (0.509 → 0.983); not yet re-measured on this fork.
   backtest/     — portfolio construction, ADV-scaled basket weights, cost model, R1W baseline
   diagnostics/  — SHAP fan-out, alpha decay, weekday effect
   reporting/    — multi-agent (briefing → critique → synthesize) report generation
@@ -37,6 +42,18 @@ tests/          — unit and integration tests
 - **Rolling window**: paper uses 520-week train / 104-week validation / 1-week test, retrain every 12 weeks. Current `configs/default.yaml` uses **78 / 26 / 1** as a held-over Phase-1 default; the data now spans 2008-2026 so the paper window fits — bump tracked in `.specify/007-implementation-plan.md` task H.10.
 - **Neutralization**: cross-sectional per (date, factor) — winsorize 2%/98% → iterative z-score (10x) → cap at ±3 → subtract industry median → drop tickers with >10 missing factors and zero-fill the rest. Wired via `neutralize_stacked` in `src/main.py`. Macro/regime columns bypass the cross-section as passthrough (would otherwise collapse to NaN with std=0 across the cross-section).
 - **Target**: Cross-sectionally z-scored forward 1-week returns
+- **LightGBM member**: a random-hyperparameter bag, not a single booster. Each retrain
+  samples `n_candidates` param sets from `random_ensemble.param_space` (learning rate
+  log-uniform, leaf/sample counts int-rounded), trains one booster per set, scores each
+  by **validation rank-IC** (the cross-sectional objective the strategy actually trades),
+  and averages the top `n_select`. `backend: modal` fans the fits across CPU containers —
+  required here because this backtest has ~58 retrains (690 weeks / retrain_freq 12), so
+  200 serial local fits per retrain will not finish. Needs `pip install modal` +
+  `modal setup`; set `backend: local` for the in-process loop.
+- **Ensemble combination**: `rank_mean` (default) | `mean` | `ir_weighted` (weight members
+  by their validation rank-IC per retrain period) | `stack` (walk-forward ridge on member
+  cross-sectional ranks). `ir_weighted`/`stack` degrade to `rank_mean` in live
+  single-week scoring, which has no IC history to weight with.
 - **Cost model**: 1.5 bps per side, 1-day execution lag (enforced — `main.py` refuses lag<1), ADV-based position scaling (`min(1, ADV/threshold)` then renormalize), per-region thresholds.
 
 ## Factor Groups
@@ -71,6 +88,10 @@ export FMP_API_KEY="..."
 export DATABENTO_API_KEY="db-..."        # optional, for price_source: databento
 export ANTHROPIC_API_KEY="sk-ant-..."    # reporting layer (briefing/critique/synthesize)
 export OPENAI_API_KEY="sk-..."           # alternative provider for reporting
+
+# Incremental data refresh (extends the shared ~/data_lake/fmp cache forward).
+# Add --refresh-membership periodically so index adds/drops enter the universe.
+python -m src.data backfill --regions US,UK,CA --refresh-membership
 
 # Run full pipeline (data → features → ensemble → backtest → SHAP → diagnostics → save)
 python -m src.main

@@ -59,6 +59,13 @@ def run_pipeline(config_name: str = "default") -> dict:
     regions = tuple(cfg["universe"].get("regions", ["US"]))
     backtest_start = pd.Timestamp(cfg["data"]["start_date"])
     backtest_end = pd.Timestamp(cfg["data"]["end_date"])
+    # Retail mode: a retail-sized book has no market-impact/capacity constraint,
+    # so drop ALL ADV gating — the Phase 1c universe filter, the per-week
+    # eligibility ADV floor, and the basket position-scaling. The per-region
+    # price floor (penny-stock guard) stays on; it's data quality, not capacity.
+    retail_mode = cfg["backtest"].get("retail_mode", False)
+    if retail_mode:
+        log.info("retail_mode=True — all ADV liquidity/capacity constraints disabled.")
 
     from src.data.fmp import _resolve_cache_dir
     cache_root = _resolve_cache_dir(None) / "constituents"
@@ -145,7 +152,10 @@ def run_pipeline(config_name: str = "default") -> dict:
     # native-currency thresholds when configured; falls back to the legacy
     # scalar `min_adv_6m`. UK uses GBp pence; CA uses CAD; US uses USD.
     min_adv_by_region = cfg["universe"].get("min_adv_6m_by_region")
-    if min_adv_by_region:
+    if retail_mode:
+        log.info("Phase 1c: retail_mode — skipping ADV universe filter.")
+        adv_mask = pd.DataFrame()  # empty → keep/drop block below is skipped
+    elif min_adv_by_region:
         log.info(
             f"Phase 1c: Applying per-region ADV filter (native currency): "
             f"{min_adv_by_region}"
@@ -236,7 +246,9 @@ def run_pipeline(config_name: str = "default") -> dict:
         if macro_df is not None and macro_cfg.get("hmm_enabled", True):
             regimes_path = PROCESSED_DIR / "macro_regimes.parquet"
             macro_regimes_df = load_macro_regimes(
-                regimes_path, expected_macros=set(macro_df.columns)
+                regimes_path,
+                expected_macros=set(macro_df.columns),
+                expected_end=macro_df.index.max(),
             )
             if macro_regimes_df is None or macro_cfg.get("hmm_refit", False):
                 log.info("Phase 1f: Fitting HMM regime posteriors (once over full history)...")
@@ -257,6 +269,8 @@ def run_pipeline(config_name: str = "default") -> dict:
 
     # --- Phase 2: Feature Engineering ---
     log.info("Phase 2: Building features...")
+    signal_day = cfg["backtest"].get("signal_day", "WED")
+    log.info(f"Backtest signal day: {signal_day}")
     features, passthrough_cols = build_feature_matrix(
         close, volume,
         market_close=market_close,
@@ -265,8 +279,12 @@ def run_pipeline(config_name: str = "default") -> dict:
         macro=macro_df,
         macro_regimes=macro_regimes_df,
         cfg=cfg,
+        signal_day=signal_day,
     )
-    target = build_target(close)
+    target = build_target(
+        close, signal_day=signal_day,
+        exec_lag_days=cfg["backtest"].get("execution_lag_days", 1),
+    )
     log.info(
         f"Feature matrix: {features.shape} "
         f"({len(passthrough_cols)} passthrough macro/regime cols)"
@@ -303,7 +321,7 @@ def run_pipeline(config_name: str = "default") -> dict:
 
     # --- Phase 4: Backtesting ---
     log.info("Phase 4: Running backtest...")
-    from src.features.build import resample_to_wednesday
+    from src.features.build import resample_to_weekday
 
     # Execution lag: signal computed Wed close, trades fill `execution_lag_days`
     # later. Shift daily closes back by the lag before resampling, so the weekly
@@ -319,7 +337,7 @@ def run_pipeline(config_name: str = "default") -> dict:
         )
     log.info(f"Applying {exec_lag}-day execution lag to backtest returns")
     shifted_close = close.shift(-exec_lag)
-    weekly_returns = resample_to_wednesday(shifted_close).pct_change().shift(-1)
+    weekly_returns = resample_to_weekday(shifted_close, signal_day).pct_change().shift(-1)
 
     # Cap individual stock weekly returns to suppress tail-event blowups
     # (e.g., 2009-04 post-GFC penny-stock reflation pops). Conservative cap.
@@ -330,14 +348,16 @@ def run_pipeline(config_name: str = "default") -> dict:
 
     # ADV (6-month rolling avg dollar volume) for position scaling per paper p.10
     adv_daily = (close * volume).rolling(window=126, min_periods=63).mean()
-    adv_weekly = resample_to_wednesday(adv_daily)
+    adv_weekly = resample_to_weekday(adv_daily, signal_day)
+    # Retail mode disables ADV-based basket position-scaling (None → equal weight).
+    adv_arg = None if retail_mode else adv_weekly
 
     # Per-week eligibility: drops penny-stock weeks, illiquid weeks, and (for
     # US) weeks where the ticker wasn't in the SP500 yet / had been removed.
     # Without this the model trades pre-IPO names, post-delisting zombie names,
     # and reflation penny stocks — breaking the long-short construct in tails.
     log.info("Phase 4a: Building per-week eligibility mask...")
-    weekly_close = resample_to_wednesday(close)
+    weekly_close = resample_to_weekday(close, signal_day)
     pit_us = None
     if "US" in regions:
         pit_us = pd.read_parquet(cache_root / "sp500_membership.parquet")
@@ -346,7 +366,9 @@ def run_pipeline(config_name: str = "default") -> dict:
         weekly_adv=adv_weekly,
         region_map=region_map,
         min_price_by_region=cfg["universe"].get("min_price_by_region", {}),
-        min_adv_by_region=cfg["universe"].get("min_adv_6m_by_region", {}),
+        # retail: 0.0 floors per region (NOT {} — a missing region defaults to inf, which masks everything out)
+        min_adv_by_region=({r: 0.0 for r in regions} if retail_mode
+                           else cfg["universe"].get("min_adv_6m_by_region", {})),
         pit_membership_us=pit_us,
     )
     log.info(
@@ -372,7 +394,7 @@ def run_pipeline(config_name: str = "default") -> dict:
     portfolios: dict[str, pd.DataFrame] = {}
     for member, preds in masked_preds.items():
         portf = build_long_short_portfolio(
-            preds, weekly_returns, adv=adv_weekly, cfg=cfg, region_map=region_map
+            preds, weekly_returns, adv=adv_arg, cfg=cfg, region_map=region_map
         )
         portfolios[member] = portf
         model_comparison[member] = compute_performance_metrics(portf)
@@ -384,9 +406,9 @@ def run_pipeline(config_name: str = "default") -> dict:
     # Baseline: sector-relative R1W reversal (paper p.5 baseline strategy a).
     # Earnings-filtered baseline gated on Phase 2 UPDOWN1W availability.
     log.info("Phase 4b: R1W reversal baseline...")
-    baseline_preds = r1w_reversal_predictions(close, sector_map=sector_map)
+    baseline_preds = r1w_reversal_predictions(close, sector_map=sector_map, signal_day=signal_day)
     baseline_portfolio = build_long_short_portfolio(
-        baseline_preds, weekly_returns, adv=adv_weekly, cfg=cfg, region_map=region_map
+        baseline_preds, weekly_returns, adv=adv_arg, cfg=cfg, region_map=region_map
     )
     baseline_metrics = compute_performance_metrics(baseline_portfolio)
     log.info(f"Baseline R1W IR: {baseline_metrics['information_ratio']:.3f}")
@@ -468,9 +490,13 @@ def run_pipeline(config_name: str = "default") -> dict:
             sv = _np.asarray(sv).reshape(Xs.shape)
             return sv, X
 
-        explainer = _shap.TreeExplainer(model)
-        vals = explainer.shap_values(X)
-        return vals, X
+        # Tree members go through tree_shap_values, which additionally handles
+        # the LightGBM random-ensemble bag (averages TreeExplainer attributions
+        # across its selected boosters) — a bare TreeExplainer cannot explain an
+        # LGBBag. Falls through to explaining a single model directly.
+        from src.model.train import tree_shap_values
+
+        return tree_shap_values(model, X), X
 
     for member, model in last_models.items():
         try:
@@ -504,10 +530,11 @@ def run_pipeline(config_name: str = "default") -> dict:
         decay = alpha_decay_analysis(
             close, predictions,
             lags=diag_cfg.get("alpha_decay_lags", [0, 1, 2, 3, 4]),
-            adv=adv_weekly,
+            adv=adv_arg,
             region_map=region_map,
             weekly_return_cap=cfg["backtest"].get("weekly_return_cap"),
             cfg=cfg,
+            signal_day=signal_day,
         )
         decay.to_parquet(PROCESSED_DIR / "alpha_decay.parquet")
         log.info(f"Alpha decay (IR by lag): {decay['information_ratio'].round(3).to_dict()}")

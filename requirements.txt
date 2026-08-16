@@ -11,6 +11,9 @@ scipy>=1.11.0
 # ML
 xgboost>=2.0.0
 lightgbm>=4.1.0
+modal>=0.64  # CPU fan-out for the LightGBM random-hyperparameter ensemble
+             # (src/model/lgb_modal.py). Only imported when
+             # model.lightgbm.random_ensemble.backend == "modal".
 scikit-learn>=1.3.0
 shap>=0.43.0
 torch>=2.1.0           # MLP member of the ensemble (src/model/mlp.py)

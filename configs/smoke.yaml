@@ -1,6 +1,6 @@
 universe:
   index: "SP500"                       # legacy — Phase 1 single-region
-  regions: ["US", "UK", "CA"]          # multi-region per Phase 2 plan
+  regions: ["US"]          # SMOKE: US-only for a fast pre-flight test
   indexes:                             # one per region (FMP membership lookups)
     US: "SP500"
     UK: "FTSE100"
@@ -44,7 +44,7 @@ data:
   fmp_rate_limit_per_min: 280    # Conservative for FMP Premium (300/min); raise to 700 if Ultimate
   fmp_history_start: "2006-01-01" # paper window start
   start_date: "2006-01-01"       # was 2023-04-01 — extended for paper-window backfill
-  end_date: "2026-08-14"         # last completed trading day as of the 2026-08-15 refresh
+  end_date: "2026-04-11"
   fundamental_pub_lag_days: 90   # conservative look-ahead guard
   benchmarks:
     US: "^GSPC"
@@ -199,11 +199,7 @@ macro:
 
   # HMM regime posteriors — cached to data/processed/macro_regimes.parquet.
   # The cache is reloaded across runs; set hmm_refit: true to regenerate.
-  # Disabled 2026-08-15 (experiment): drops the per-series S0/S1/transition
-  # posterior columns from the feature matrix entirely. The raw macro
-  # changes/returns and threshold flags above are UNAFFECTED and still feed the
-  # model — this switch only removes the HMM block. Set true to restore.
-  hmm_enabled: false
+  hmm_enabled: true
   hmm_states: 2                    # per-macro 2-state Gaussian HMM (calm vs stress)
   hmm_fit_mode: "walk_forward"     # causal — refits every hmm_refit_every obs on the
                                    # expanding window, no future info ever used.
@@ -230,106 +226,44 @@ model:
   # ensemble.combine. With a bare member name, only that member runs (back-compat).
   type: "ensemble"        # ensemble | xgboost | lightgbm | random_forest
   ensemble:
-    # MLP dropped 2026-08-15: weakest member (IR 0.815 in the 2026-06-20 run) and
-    # by far the most expensive per retrain — the only member doing tens of
-    # thousands of CPU gradient steps (no CUDA on this box). The sentiment fork
-    # dropped it for the same reason. The `mlp:` params block below is retained
-    # but unused; re-add the name here to bring it back.
-    members: ["xgboost", "lightgbm", "random_forest"]
-    # rank_mean | mean | ir_weighted | stack — see src/model/ensemble.py.
-    #   ir_weighted: weight members by validation rank-IC per retrain period.
-    #   stack: walk-forward ridge meta-learner on member cross-sectional ranks.
-    # (ir_weighted / stack fall back to rank_mean in live single-week scoring.)
-    # Left at rank_mean so this change is a clean A/B against the 2026-06-20 run;
-    # ir_weighted is the obvious next experiment given the member spread
-    # (lgb 1.17 / rf 1.14 vs equal-weight ensemble 1.06).
-    combine: "rank_mean"
+    members: ["xgboost", "lightgbm", "random_forest", "mlp"]
+    combine: "rank_mean"  # rank_mean | mean — see src/model/ensemble.py
   # Walk-forward windows shared across all members.
   # 260/52 chosen for the FMP-history Phase-2 run: 5y train, 1y val. Previous
   # 78/26 was forced by Databento's 2023+ history and produced 5-8k rows per
   # train window, undertrained against the 48-column feature matrix. With
   # FMP back to 2006-01-01 we have room for a paper-style window — first
   # predictable week is ~2014 (warmup + 260+52 weeks), leaving ~12y OOS.
-  train_weeks: 260        # ~5 years (MIN initial train when window=expanding)
-  val_weeks: 52           # ~1 year
-  retrain_freq: 12        # retrain every 12 weeks
-  # "rolling" = fixed train_weeks slice (the behaviour every run through
-  # 2026-06-20 used — kept as the default so the LightGBM random-ensemble change
-  # is the only moving part in the next A/B).
-  # "expanding" = train on ALL history up to the validation block; train_weeks
-  # then only sets the minimum warmup before the first OOS week.
-  window: "rolling"
-  # Capped-expanding (only meaningful with window=expanding): grow the train
-  # slice from start_date, but once the lookback reaches max_train_weeks hold it
-  # fixed and roll forward. Bounds peak memory without the OOS loss of a pure
-  # rolling window. null/omit = unbounded expanding. 780 weeks = 15 years.
-  max_train_weeks: null
-  # Per-retrain checkpointing for a resumable backtest. Each retrain step dumps a
-  # bundle (persist_retrains); on a re-run, a step whose bundle already exists and
-  # matches this run's fingerprint (config + feature columns + date index) is
-  # reloaded instead of refit — so a killed run resumes by replaying only the
-  # cheap weekly scoring. Set reuse_saved_retrains:false to force a full refit.
-  persist_retrains: true
-  reuse_saved_retrains: true
+  train_weeks: 26         # SMOKE: tiny window
+  val_weeks: 8            # SMOKE
+  retrain_freq: 150       # SMOKE: ~6 retrains over the span
   # Per-member hyperparameters.
   xgboost:
     params:
       max_depth: 4
       learning_rate: 0.03
-      n_estimators: 2000
+      n_estimators: 100      # SMOKE
       subsample: 0.7
       colsample_bytree: 0.7
       objective: "reg:squarederror"
       tree_method: "hist"
-    early_stopping_rounds: 50
+    early_stopping_rounds: 20
   lightgbm:
     params:
       objective: "regression"
       num_leaves: 31
       max_depth: -1
       learning_rate: 0.03
-      n_estimators: 2000
+      n_estimators: 100     # SMOKE
       subsample: 0.7
       subsample_freq: 1     # required for subsample to take effect
       colsample_bytree: 0.7
       verbose: -1
-    early_stopping_rounds: 50
-    # Randomized-hyperparameter ensemble: at each retrain, train n_candidates
-    # boosters (random param draw + distinct seed each), keep the n_select with
-    # the best validation rank-IC, and average their predictions. `params` above
-    # are the base; only the keys under param_space are randomized as [lo, hi]
-    # ranges (learning_rate sampled log-uniform; leaf/sample counts int-rounded).
-    # On the sentiment fork this took the LGB member from IR 0.509 → 0.983
-    # (apples-to-apples, 261 weeks). Disable to fall back to a single model.
-    #
-    # backend: modal fans the candidate fits out across CPU containers
-    # (src/model/lgb_modal.py) — needed here because this backtest has ~58
-    # retrains (690 weeks / retrain_freq 12) vs the sentiment fork's ~22, so
-    # 200 local serial fits per retrain would not finish. Requires `modal` to be
-    # installed and authenticated (`modal setup`); switch to `local` to run the
-    # in-process loop instead.
-    random_ensemble:
-      # Set false 2026-08-16 for the isolation A/B: the bag-ON run (THU, 67
-      # factors, 740 weeks) scored lightgbm IR 1.295 / ensemble 1.334, but four
-      # things had changed at once vs the June baseline, so the bag's own
-      # contribution was not separable. This run flips ONLY this flag.
-      enabled: false
-      backend: modal           # modal (fan out across CPU containers) | local
-      n_workers: 10            # modal: number of parallel CPU containers
-      n_candidates: 200
-      n_select: 50
-      seed: 42
-      param_space:
-        num_leaves: [15, 63]
-        learning_rate: [0.01, 0.08]
-        colsample_bytree: [0.5, 0.9]
-        subsample: [0.5, 0.9]
-        min_child_samples: [20, 200]
-        reg_lambda: [0.0, 5.0]
+    early_stopping_rounds: 20
   random_forest:
     # No early stopping — train on combined train+val for more data.
     params:
-      n_estimators: 400
+      n_estimators: 60       # SMOKE
       max_depth: 8
       min_samples_leaf: 50
       max_features: 0.7
@@ -346,8 +280,8 @@ model:
       lr: 0.001
       weight_decay: 0.00001
       batch_size: 512           # bigger batches → fewer iters/epoch on CPU; was 256
-      max_epochs: 100           # most fits early-stop by epoch ~30; was 200
-      early_stopping_patience: 10  # was 15
+      max_epochs: 8             # SMOKE
+      early_stopping_patience: 3   # SMOKE
       grad_clip: 1.0
       activation: "relu"        # relu | gelu | tanh
       device: null              # null = auto (cuda if available)
@@ -369,10 +303,10 @@ backtest:
   weekly_return_cap: 0.30
 
 diagnostics:
-  alpha_decay_lags: [0, 1, 2, 3, 4]
+  alpha_decay_lags: [0, 1]     # SMOKE
   weekday_signals: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
   run_weekday_effect: false    # set false to skip the 5x retrain (~5-10 min)
-  shap_test_weeks: 26          # how many recent weeks to feed into SHAP (denser beeswarm matches paper p.7)
+  shap_test_weeks: 3           # SMOKE
 
 reporting:
   profile: "cheap"            # cheap | cheap-openai | mixed | quality | quality-openai

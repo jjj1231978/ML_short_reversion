@@ -293,9 +293,27 @@ def build_feature_matrix(
     return stacked, passthrough_cols
 
 
-def build_target(close: pd.DataFrame, signal_day: str = "WED") -> pd.DataFrame:
-    """Forward 1-week return (signal_day → next signal_day), cross-sectionally z-scored."""
-    weekly_close = resample_to_weekday(close, signal_day)
+def build_target(
+    close: pd.DataFrame, signal_day: str = "WED", exec_lag_days: int = 1
+) -> pd.DataFrame:
+    """Forward 1-week return, cross-sectionally z-scored.
+
+    With ``exec_lag_days >= 1`` the holding window is shifted forward by that many
+    trading sessions on BOTH endpoints, so the label is the *implementable*
+    return: the signal is computed at the signal-day close, the position is
+    entered the next session, and exited one week later. The first realized
+    return therefore lands two sessions after the signal (e.g. a Thursday signal
+    is entered Friday and first earns on Monday).
+
+    This mirrors the backtest P&L (``close.shift(-exec_lag)`` in ``src/main.py``)
+    so the model is trained on exactly the return it is traded on. Holiday weeks
+    fall out naturally: the shift lands on the next available trading session.
+
+    ``exec_lag_days=0`` reproduces the raw signal-day → signal-day return and is
+    only used for the lag-0 alpha-decay diagnostic.
+    """
+    shifted = close.shift(-exec_lag_days) if exec_lag_days else close
+    weekly_close = resample_to_weekday(shifted, signal_day)
     fwd_ret = weekly_close.pct_change().shift(-1)  # forward return
 
     # Cross-sectional z-score

@@ -137,6 +137,90 @@ def load_latest_bundle(signal_day: str = "WED") -> dict | None:
     return joblib.load(latest)
 
 
+def load_matching_bundle(
+    retrain_date: pd.Timestamp | date | str,
+    signal_day: str,
+    *,
+    feature_columns: list[str],
+    members: list[str],
+    train_weeks: int,
+    val_weeks: int,
+    retrain_freq: int,
+    fingerprint: str | None = None,
+    allow_structural_restamp: bool = False,
+) -> dict | None:
+    """Return the saved bundle for ``retrain_date`` IFF it was trained under a
+    matching configuration — else None (caller refits).
+
+    This is the per-retrain checkpoint that makes a killed backtest resumable:
+    on restart, every retrain step whose bundle already exists on disk and
+    matches the current run is reloaded instead of refit (the dominant cost),
+    while the cheap weekly scoring is replayed.
+
+    Matching is deliberately strict so a stale bundle from a *different* config
+    (e.g. a different universe / feature set / window left in the same dir) is
+    never silently reused:
+
+    - If both the on-disk bundle and the caller carry a ``fingerprint`` (newer
+      bundles store one under ``extra``), they must be equal. The fingerprint
+      also pins the data extent (date index), so a price/data refresh that adds
+      weeks invalidates the reuse and forces a clean refit.
+    - Legacy bundles saved before fingerprints existed fall back to matching on
+      feature column order, member set, and the train/val/retrain windows. That
+      distinguishes configs but cannot detect a same-config *data* change, so a
+      one-line warning is logged; reuse here assumes the data is unchanged
+      (true for a cache-only resume of an interrupted run).
+    - ``allow_structural_restamp`` (manual resume escape hatch): when set, a
+      fingerprint *mismatch* falls through to the same structural match instead
+      of forcing a refit. Use ONLY when the data is known-unchanged out-of-band
+      and the fingerprint delta is a benign config change (the caller re-saves
+      the bundle under the new fingerprint). Off by default — normal runs keep
+      the strict guard.
+    """
+    date_str = _format_date(retrain_date)
+    path = _signal_dir(signal_day.upper()) / f"{date_str}.joblib"
+    if not path.exists():
+        return None
+    try:
+        payload = joblib.load(path)
+    except Exception as e:  # corrupt/partial bundle from a hard kill → refit
+        log.warning(f"Could not load bundle {path} ({e}); will refit.")
+        return None
+
+    def _structural_match() -> bool:
+        return (
+            list(payload.get("feature_columns", [])) == list(feature_columns)
+            and set(payload.get("members", [])) == set(members)
+            and int(payload.get("train_weeks", -1)) == int(train_weeks)
+            and int(payload.get("val_weeks", -1)) == int(val_weeks)
+            and int(payload.get("retrain_freq", -1)) == int(retrain_freq)
+        )
+
+    saved_fp = (payload.get("extra") or {}).get("fingerprint")
+    if fingerprint is not None and saved_fp is not None:
+        if saved_fp == fingerprint:
+            return payload
+        if allow_structural_restamp and _structural_match():
+            log.warning(
+                f"RESUME_RESTAMP: reusing {path.name} despite fingerprint "
+                f"mismatch ({saved_fp} != {fingerprint}) — structural match holds; "
+                "assuming input data unchanged. Bundle will be re-saved under the "
+                "current fingerprint."
+            )
+            return payload
+        return None
+
+    # Legacy fallback: no fingerprint stored. Match on the structural fields the
+    # bundle does carry.
+    if _structural_match():
+        log.warning(
+            f"Reusing legacy bundle {path.name} by feature/member/window match "
+            "(no fingerprint stored); assuming the input data is unchanged."
+        )
+        return payload
+    return None
+
+
 def needs_retrain(as_of: pd.Timestamp, retrain_freq_weeks: int, signal_day: str = "WED") -> bool:
     """True if there is no saved state, or the cadence threshold has elapsed.
 

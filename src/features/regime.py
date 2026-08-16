@@ -100,7 +100,9 @@ def _macros_in_regimes(df: pd.DataFrame) -> set[str]:
 
 
 def load_macro_regimes(
-    path: Path, expected_macros: set[str] | None = None
+    path: Path,
+    expected_macros: set[str] | None = None,
+    expected_end: pd.Timestamp | str | None = None,
 ) -> pd.DataFrame | None:
     """Load cached regime posteriors if present; return None if missing or stale.
 
@@ -110,6 +112,14 @@ def load_macro_regimes(
     longer matches the feature matrix. When the cached macro set differs from
     `expected_macros`, return None so the caller rebuilds — keeping the backtest
     (src.main) and live inference (src.predict) on the same feature columns.
+
+    `expected_end` guards the *other* staleness axis: a data refresh extends the
+    macro series forward but leaves the macro set unchanged, so the set check
+    above still passes. Reusing that cache silently yields no regime posteriors
+    for the newly-added dates — which the feature builder then zero-fills, so the
+    most recent (and most decision-relevant) weeks quietly train and forecast on
+    a flat, all-neutral regime block instead of the real one. When the cache ends
+    before `expected_end`, return None so the caller refits over the full range.
     """
     if not path.exists():
         return None
@@ -121,6 +131,18 @@ def load_macro_regimes(
             log.warning(
                 f"Macro-regime cache is stale: cached macros {sorted(have)} != "
                 f"current {sorted(want)}. Ignoring cache (will rebuild)."
+            )
+            return None
+    if expected_end is not None and len(df):
+        cached_end = pd.Timestamp(df.index.max()).normalize()
+        want_end = pd.Timestamp(expected_end).normalize()
+        # Tolerance: the macro panel ends on the last *trading* day, so a cache
+        # built against the same data can legitimately fall a few calendar days
+        # short of a weekend/holiday end_date. Only a real gap invalidates.
+        if cached_end < want_end - pd.Timedelta(days=7):
+            log.warning(
+                f"Macro-regime cache is stale: cached through {cached_end.date()} "
+                f"but data extends to {want_end.date()}. Ignoring cache (will rebuild)."
             )
             return None
     log.info(f"Loaded macro regimes from {path}: {df.shape[0]} dates × {df.shape[1]} cols")
