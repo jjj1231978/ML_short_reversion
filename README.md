@@ -38,16 +38,29 @@ XGBoost, LightGBM, and RandomForest, with SHAP attribution per member.
 
 Signal day **THU**, 67 factors, 740 backtest weeks, data through **2026-08-14**.
 
-| Model | IR |
-|---|---|
-| xgboost | 1.382 |
-| lightgbm | 1.295 |
-| random_forest | 1.192 |
-| **ensemble** | **1.334** |
-| R1W baseline | 0.896 |
+All figures below are over the **same 740 weeks** (2012-06-21 → 2026-08-20), net
+of 1.5 bps/side and a 1-day execution lag.
+
+| Model | IR | Ann. return | Max drawdown |
+|---|---|---|---|
+| xgboost | 1.382 | 9.40% | −12.4% |
+| lightgbm | 1.295 | 9.08% | −9.8% |
+| random_forest | 1.192 | 8.07% | −8.1% |
+| **ensemble** | **1.334** | 8.70% | **−7.8%** |
+| R1W baseline | 0.596 | 6.93% | −25.2% |
 
 `R1W` is the top SHAP feature (#1 of 67 in both boosters), consistent with the
 paper's core hypothesis.
+
+**Note on the baseline figure.** Earlier versions of this table quoted the R1W
+baseline at **0.896**, which was not comparable: the baseline needs no training
+and runs from 2006-01-12, while the model only starts after its 260+52-week
+warmup at 2012-06-21. Scoring each over its own history gave the baseline 336
+extra weeks the model never traded — including the GFC, when reversal did
+unusually well. On matched weeks the baseline is **0.596**, so the model's edge
+is larger than previously reported (+0.738 rather than +0.438), and the drawdown
+gap (−7.8% vs −25.2%) was hidden entirely. The Overview page now clips all curves
+to a common start and shows a like-for-like table.
 
 **Caveat on these numbers:** they are not a clean read on any single change.
 Relative to the previous run, the signal day moved WED→THU, the HMM regime block
