@@ -7,6 +7,15 @@ universe:
     CA: "TSX60"
   exclude_gics_sectors: [40]  # Financials (legacy; FMP path uses exclude_sectors below)
   exclude_sectors: ["Financial Services"]   # FMP profile sector vocabulary
+  # Drop preferred-share lines (ENB-PN.TO, BCE-PY.TO, …) from the tradeable set.
+  # Applied at SELECTION time in src/predict.py — no retrain needed, the model
+  # simply never picks them. They sit near a fixed C$25 par with bond-like
+  # yields, so the price factors that drive this model mean something different
+  # on them, and FMP reports the parent issuer's market cap so SIZE is wrong.
+  # NOTE: intentionally NOT applied in the backtest (src/main.py) — doing so
+  # would change historical results and break comparability with the runs
+  # already recorded in .specify/007. Revisit as a deliberate universe change.
+  exclude_preferred: true
   min_adv_6m: 3_000_000                # legacy scalar fallback (US)
   adv_scaling_threshold: 20_000_000    # legacy scalar fallback (US)
   # Per-region thresholds in NATIVE currency (UK is GBp pence, not £).

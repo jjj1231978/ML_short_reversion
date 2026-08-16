@@ -469,7 +469,24 @@ def _build_target_eligibility(
         if len(prior) == 0:
             return pd.Series(False, index=close.columns)
         target_wed = prior[-1]
-    return eligibility.loc[target_wed]
+    out = eligibility.loc[target_wed]
+
+    # Drop preferred-share lines from the tradeable set. Applied at SELECTION
+    # time only — the model is not retrained, it simply never picks them. See
+    # universe.is_preferred_share for why they are unsuitable (fixed par, bond
+    # -like yields, parent-issuer market cap).
+    if cfg["universe"].get("exclude_preferred", True):
+        from src.data.universe import is_preferred_share
+
+        pref = pd.Index([t for t in out.index if is_preferred_share(t)])
+        if len(pref):
+            out.loc[pref] = False
+            log.info(
+                f"Excluded {len(pref)} preferred-share lines from the eligible "
+                f"universe: {', '.join(sorted(pref)[:12])}"
+                + (" ..." if len(pref) > 12 else "")
+            )
+    return out
 
 
 # ---------------------------------------------------------------------------

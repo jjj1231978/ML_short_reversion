@@ -1,6 +1,7 @@
 """Universe construction: index constituents, sector filters, ADV filters."""
 
 import io
+import re
 
 import pandas as pd
 import requests
@@ -213,3 +214,41 @@ def get_region_for_ticker(symbol: str) -> str | None:
             if symbol in set(df["symbol"].astype(str)):
                 return region
     return None
+
+
+# ---------------------------------------------------------------------------
+# Preferred-share exclusion
+# ---------------------------------------------------------------------------
+
+# TSX/NYSE convention: a preferred series is a "-P" suffix plus the series
+# letter, e.g. ENB-PN.TO (Enbridge preferred series N), BCE-PY.TO. The trailing
+# ".TO"/".L" exchange suffix is optional so US lines like BAC-PL also match.
+#
+# Deliberately NOT `-[A-Z]`: that convention also marks dual-class COMMON
+# shares, which are legitimate universe members and must not be dropped —
+# BBD-A.TO / BBD-B.TO (Bombardier), BF-B (Brown-Forman), CTC-A.TO (Canadian
+# Tire), GIB-A.TO (CGI), BT-A.L (BT Group). Nor `-UN` (income-trust/REIT units
+# such as BEP-UN.TO), which are equity-like and intentionally kept.
+_PREFERRED_RE = re.compile(r"-P[A-Z]?(?:\.[A-Z]+)?$", re.IGNORECASE)
+
+
+def is_preferred_share(symbol: str) -> bool:
+    """True if `symbol` looks like a preferred-share line rather than common equity.
+
+    Preferreds are excluded at SELECTION time because they are not the
+    instrument the model was trained to rank: they trade near a fixed par
+    (C$25 on the TSX) with bond-like yields, so the price-derived factors that
+    dominate this model (R1W reversal, momentum, volatility) carry a completely
+    different meaning on them. FMP also reports the PARENT issuer's market cap
+    on a preferred line, so SIZE is simply wrong for these names.
+
+    Verified against the 2026-08-20 forecast universe: matches exactly the 12
+    preferred lines (all clustered at $21-26 with 5.7-7.6% yields) and none of
+    the dual-class commons.
+    """
+    return bool(_PREFERRED_RE.search(str(symbol).strip()))
+
+
+def filter_preferred_shares(symbols) -> list[str]:
+    """Return `symbols` with preferred-share lines removed (order preserved)."""
+    return [s for s in symbols if not is_preferred_share(s)]
