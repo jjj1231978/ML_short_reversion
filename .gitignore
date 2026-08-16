@@ -30,6 +30,13 @@ data/processed/*
 !data/processed/shap_values_lightgbm.parquet
 !data/processed/shap_values_random_forest.parquet
 !data/processed/weekday_effect.parquet
+# Per-signal-day track record. Easy to miss when auditing which artifacts the
+# app reads: page 09 builds this filename with an f-string
+# (forecast_track_record_{code}.parquet), so it does not show up in a grep for
+# literal artifact names. Omitting it renders the Track record page empty.
+!data/processed/forecast_track_record_WED.parquet
+!data/processed/forecast_track_record_THU.parquet
+!data/processed/forecast_track_record_FRI.parquet
 !data/processed/forecast_picks.db
 !data/processed/live_trackrecord.db
 !data/processed/forecasts/
