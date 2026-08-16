@@ -75,8 +75,11 @@ git push origin macro-fmp-premium-fix   # GitHub (private, source of truth)
 git push hf HEAD:main                   # Hugging Face Space (private, runtime)
 ```
 
-`FMP_API_KEY` must be set in **Space Settings → Variables and secrets** for the
-pages that refresh data; the committed artifacts render without it.
+**No secrets are required.** The Space is a pure viewer over the committed
+artifacts and makes no outbound API calls: the only fetching code path
+(`return_calibration.build_calibration`) is never invoked by the app, and it
+imports `fetch_price_data` inside the function, so nothing network-related is
+even loaded. Refreshing data and retraining happen locally, not on the Space.
 
 ## Visibility
 
