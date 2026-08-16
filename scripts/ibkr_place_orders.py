@@ -1,9 +1,19 @@
 """Place the forecast book into an IBKR PAPER account (reconcile-to-target).
 
-Ported from ../ML_short_sentiment/scripts/ibkr_place_orders.py. Two differences:
-this reads the order CSV written by `scripts.build_orders` (not meta_orders_*.csv),
-and it trades BOTH US (SMART/USD) and Canadian (TSE/CAD) legs rather than
-filtering to US-only — IBKR auto-borrows the CAD, so no pre-funding is required.
+Ported from ../ML_short_sentiment/scripts/ibkr_place_orders.py; reads the order CSV
+written by `scripts.build_orders` rather than meta_orders_*.csv.
+
+US-ONLY BY DEFAULT. The account is permissioned to trade Canada, but IBKR refuses
+Canadian products over the API ("Error 201: API/CTCI orders for Canadian products
+are not allowed"), so a US+CA book silently loses its CA leg on submission. Because
+that leg is long-skewed, what survives is net-short rather than dollar-neutral —
+which is why the region filter is a hard default rather than a preference.
+
+ALL ORDERS ROUTE SMART. Direct-routed API orders are DISCARDED by IB's default
+precautionary setting (error 10311 -> 201, order discarded) — this is silent, and a
+dry-run cannot detect it because nothing is submitted. Contracts built from
+ib.positions() carry the listing exchange (NYSE/NASDAQ), so closes must be rebuilt
+onto SMART with primaryExchange rather than reused as-is.
 
 SAFETY
   * Dry-run by DEFAULT — prints the plan and transmits nothing. Add --transmit to send.
@@ -85,7 +95,8 @@ def main() -> None:
     ap.add_argument("--flatten-first", action="store_true",
                     help="Close EVERY existing position as its own order instead of netting the "
                          "delta. Trades more and pays spread twice on overlapping names.")
-    ap.add_argument("--regions", default="US,CA", help="Regions to trade from the order CSV.")
+    # See scripts/build_orders.py for why this defaults to US-only.
+    ap.add_argument("--regions", default="US", help="Regions to trade from the order CSV.")
     args = ap.parse_args()
     sd = args.signal_day.upper()
     host = args.host or _default_host()
@@ -183,13 +194,29 @@ def main() -> None:
         # Resolve contracts up front so a bad symbol cannot be silently cancelled
         # mid-batch. Targeted names use the CSV's exchange/currency; names only being
         # closed reuse the contract IBKR already reports for the position.
+        # ALWAYS route SMART, never to a named exchange. IB's default precautionary
+        # setting ("Direct routed orders may result in higher trade fees", error
+        # 10311) DISCARDS direct-routed API orders outright — error 201, order
+        # discarded, silently. Two ways that bit us:
+        #   - closes reused the contract from ib.positions(), which carries the
+        #     listing exchange (NYSE/NASDAQ) rather than SMART;
+        #   - the CA legs were built with exchange="TSE".
+        # primaryExchange still disambiguates the listing without direct-routing.
+        def _smart(sym: str, ccy: str, primary: str | None) -> Stock:
+            c = Stock(str(sym), "SMART", str(ccy))
+            if primary and primary.upper() not in ("SMART", "", "NAN"):
+                c.primaryExchange = str(primary).upper()
+            return c
+
         conmap = {}
         for t in plan["ticker"]:
             if t in meta:
                 sym, exch, ccy = meta[t]
-                conmap[t] = Stock(str(sym), str(exch), str(ccy))
+                conmap[t] = _smart(sym, ccy, exch)
             elif t in cur_contract:
-                conmap[t] = cur_contract[t]
+                held_c = cur_contract[t]
+                conmap[t] = _smart(held_c.symbol, held_c.currency,
+                                   held_c.primaryExchange or held_c.exchange)
             else:
                 conmap[t] = Stock(t, "SMART", "USD")
         qualified = ib.qualifyContracts(*conmap.values())

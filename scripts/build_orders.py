@@ -58,7 +58,13 @@ def main() -> None:
     ap.add_argument("--capital", type=float, required=True,
                     help="Total GROSS dollars to deploy (~half long / half short).")
     ap.add_argument("--top", type=int, default=15, help="Names per side.")
-    ap.add_argument("--regions", default="US,CA", help="Comma-separated regions to trade.")
+    # US-only by default: IBKR rejects Canadian products over the API on this
+    # account ("Error 201: API/CTCI orders for Canadian products are not allowed"),
+    # even though the account IS permissioned to trade Canada manually. Placing a
+    # US+CA book therefore silently drops the CA leg — and since that leg is
+    # long-skewed, what survives is badly net-short rather than dollar-neutral.
+    # Pass --regions US,CA explicitly if the API restriction is ever lifted.
+    ap.add_argument("--regions", default="US", help="Comma-separated regions to trade.")
     ap.add_argument("--cadusd", type=float, default=0.73, help="CAD->USD rate for est_usd.")
     ap.add_argument("--liquidate", type=Path, default=None,
                     help="CSV of current positions (ticker,position) to emit closing orders for.")
