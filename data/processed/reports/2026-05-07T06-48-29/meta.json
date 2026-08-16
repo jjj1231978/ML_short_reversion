@@ -1,0 +1,44 @@
+{
+  "run_id": "2026-05-07T06-48-29",
+  "models": {
+    "briefing": "claude-haiku-4-5",
+    "critique": "claude-haiku-4-5",
+    "synth": "claude-haiku-4-5"
+  },
+  "rounds": 1,
+  "estimated_cost_usd": 0.1701,
+  "actual_cost_usd": 0.1991,
+  "budget_usd": 0.3,
+  "pipeline_run_status": "completed",
+  "usages": {
+    "briefing": {
+      "input_tokens": 1505,
+      "output_tokens": 8657,
+      "cache_read_input_tokens": 0,
+      "cache_creation_input_tokens": 44619,
+      "elapsed_seconds": 94.51,
+      "model": "claude-haiku-4-5"
+    },
+    "critique": [
+      {
+        "input_tokens": 9543,
+        "output_tokens": 4000,
+        "cache_read_input_tokens": 44619,
+        "cache_creation_input_tokens": 0,
+        "elapsed_seconds": 54.52,
+        "model": "claude-haiku-4-5"
+      }
+    ],
+    "synth": [
+      {
+        "input_tokens": 13241,
+        "output_tokens": 9358,
+        "cache_read_input_tokens": 44619,
+        "cache_creation_input_tokens": 0,
+        "elapsed_seconds": 104.78,
+        "model": "claude-haiku-4-5"
+      }
+    ]
+  },
+  "timestamp_utc": "2026-05-07T10:52:44.102213+00:00"
+}

@@ -1,10 +1,41 @@
 # Data
 data/raw/
-data/processed/
 logs/
 *.parquet
 *.csv
 *.h5
+
+# data/processed is excluded wholesale, then the specific viewer artifacts the
+# Hugging Face Space needs are whitelisted back in (shipped via Git LFS).
+# Deliberately NOT whitelisted:
+#   models/         1.3 GB of retrain bundles — predict.py needs them, the viewer does not
+#   archive_*/      point-in-time result snapshots, ~1.9 GB total
+#   predictions_per_model.parquet   18 MB, no page reads it
+#   *_mlp.*         the MLP member was dropped from the ensemble
+# Order matters: these negations MUST follow the *.parquet / *.csv rules above,
+# because the last matching pattern wins.
+data/processed/*
+!data/processed/alpha_decay.parquet
+!data/processed/baseline_r1w_returns.parquet
+!data/processed/feature_importance.parquet
+!data/processed/feature_importance_lightgbm.parquet
+!data/processed/feature_importance_random_forest.parquet
+!data/processed/metrics_summary.json
+!data/processed/model_comparison.json
+!data/processed/portfolio_returns.parquet
+!data/processed/predictions.parquet
+!data/processed/prediction_return_calibration.parquet
+!data/processed/shap_features.parquet
+!data/processed/shap_values.parquet
+!data/processed/shap_values_lightgbm.parquet
+!data/processed/shap_values_random_forest.parquet
+!data/processed/weekday_effect.parquet
+!data/processed/forecast_picks.db
+!data/processed/live_trackrecord.db
+!data/processed/forecasts/
+!data/processed/forecasts/**
+!data/processed/reports/
+!data/processed/reports/**
 
 # Python
 __pycache__/

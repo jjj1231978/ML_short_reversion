@@ -1,0 +1,26 @@
+# Runtime deps for the Hugging Face Space (Streamlit viewer only).
+#
+# Deliberately much smaller than requirements.txt: the app imports only
+# src.config plus src.backtest.{portfolio, live_trackrecord, return_calibration},
+# and every heavy dependency in those modules (databento, simfin, polygon) is
+# imported lazily inside functions. The Space never trains, so torch / shap /
+# lightgbm / xgboost / modal / hmmlearn / jupyter are all omitted — including
+# them would roughly quadruple the image for code that never executes here.
+#
+# Keep in sync with requirements.txt for the shared pins (pandas <3 in
+# particular). If a page starts importing a training module, add it HERE too or
+# the Space will build fine and then fail at runtime on that page.
+
+pandas>=2.1.0,<3.0
+numpy>=1.24.0
+scipy>=1.11.0
+pyarrow>=15.0            # parquet engine for pd.read_parquet
+scikit-learn>=1.3.0      # IsotonicRegression in src/backtest/return_calibration.py
+
+streamlit>=1.36.0
+plotly>=5.18.0
+matplotlib>=3.8.0        # app/lib/plots.py
+seaborn>=0.13.0
+
+pyyaml>=6.0              # src/config.load_config
+python-dotenv>=1.0.0     # src/data/fetch.py imports load_dotenv at module level

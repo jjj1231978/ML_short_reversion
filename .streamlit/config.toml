@@ -1,0 +1,12 @@
+# Port must agree with the Dockerfile EXPOSE and the README front-matter
+# app_port, or the HF Space renders a blank page.
+[server]
+port = 7860
+address = "0.0.0.0"
+headless = true
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "light"
