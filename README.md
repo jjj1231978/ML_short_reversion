@@ -68,6 +68,15 @@ was removed, the MLP member was dropped, and the data was extended — and xgboo
 gained +0.67 despite no changes to it, which sets the noise floor. See
 `.specify/007-implementation-plan.md`.
 
+**One change has been isolated.** A controlled A/B of the LightGBM
+random-hyperparameter bag (2026-08-17, same 740 weeks, only that flag changed)
+put the LGB member at **1.295 with the bag vs 0.931 without** — the ensemble
+moved just 1.334 → 1.286, since `rank_mean` dilutes a one-member gain across
+three. xgboost and random_forest came out bit-identical in both arms, which is
+what makes the comparison trustworthy. The bag is on by default; the ensemble-level
+delta (+0.048) is inside the noise floor above, so the member lift is the result
+worth quoting.
+
 ## Local development
 
 ```bash

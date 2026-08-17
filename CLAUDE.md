@@ -23,7 +23,10 @@ src/
                   per retrain, train N candidates → keep top-K by validation rank-IC →
                   average (`LGBBag`). Modal CPU fan-out in `model/lgb_modal.py`. Ported
                   from the ML_short_sentiment fork, where it ~2×'d the LGB member's IR
-                  (0.509 → 0.983); not yet re-measured on this fork.
+                  (0.509 → 0.983). **Re-measured on this fork 2026-08-17** by a
+                  controlled A/B (see "LightGBM bag A/B" below): 0.931 → 1.295,
+                  +39%. Smaller relative lift than the sentiment fork, as expected
+                  — LGB started out strong here rather than weakest.
   backtest/     — portfolio construction, ADV-scaled basket weights, cost model, R1W baseline
   diagnostics/  — SHAP fan-out, alpha decay, weekday effect
   research/     — per-name deep dive over the live picks: FMP fundamentals/valuation,
@@ -138,6 +141,25 @@ Paper claims to verify; current state in parentheses:
 Phase 1 (shipped 2026-05-15): multi-region US/UK/CA (S&P 500 ex-financials PIT, FTSE 100 + TSX 60 snapshot), 2008-01-30 → 2026-05-13 (955 weeks), ensemble of XGB + LGB + RF + MLP. Latest run (2026-06-06) expands the factor set to **106 factors** over 690 backtest weeks: ensemble IR (net of 1.5 bps/side, 1-day lag) = 1.06; best member (LGB) = 1.17, RF = 1.14; paper net Global L/S IR = 1.6. R1W reversal baseline IR = 1.09. (The earlier 24-factor run scored ensemble IR 1.00, RF 1.13.) See [`.specify/007-implementation-plan.md`](.specify/007-implementation-plan.md) for the full results table.
 
 Phase 2 priorities (ordered by expected information value): true UPDOWN1W from IBES/Refinitiv/FMP-estimates → region × industry quintile peer grouping → factor expansion toward 86 → 520/104 train/val window → EU + JP regions. See [`.specify/001-overview.md`](.specify/001-overview.md) for phase boundaries and [`.specify/007-implementation-plan.md`](.specify/007-implementation-plan.md) for the ordered work list.
+
+### LightGBM bag A/B (settled 2026-08-17)
+
+Isolation test of `model.lightgbm.random_ensemble.enabled` over the same 740 weeks, signal day THU, 67 factors. **Bag ON wins — it is the committed default; do not flip it off again without re-reading this.**
+
+| | bag ON | bag OFF | Δ |
+|---|---|---|---|
+| **lightgbm IR** | **1.295** | **0.931** | **+0.364** |
+| ensemble IR | 1.334 | 1.286 | +0.048 |
+| xgboost / random_forest IR | 1.382 / 1.192 | 1.382 / 1.192 | — (control) |
+| ann. return | 8.70% | 8.30% | +0.40pp |
+| max drawdown | −7.77% | −8.67% | +0.90pp |
+| avg weekly turnover | 0.4161 | 0.4180 | ~flat |
+
+The arms are genuinely comparable: identical universe (737,440 eligible cells, 535,878 predictions) and **bit-identical xgboost and random_forest IRs**, so LightGBM is provably the only thing that moved.
+
+Read the member result, not the ensemble result. The bag lifts LGB by 39%, promoting it from weakest member to second-strongest; the ensemble gains only +0.048 because `rank_mean` averages that across three members, two of which are unchanged. **+0.048 IR on a single backtest path is not significant on its own** — the case for the bag rests on the member lift and the ~1pp better drawdown.
+
+Reproducing the control arm costs ~7h (58 retrains, no Modal fan-out). The fingerprint covers member hyperparameters, so flipping `enabled` correctly invalidates every cached bundle rather than silently reusing the other arm's fits — the resume log must show `reused saved bundle` with **zero** `restamped to current fingerprint` lines, otherwise the arms are contaminated.
 
 ## Live Forecasting
 
