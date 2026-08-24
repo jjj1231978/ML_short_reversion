@@ -318,23 +318,27 @@ model:
     # installed and authenticated (`modal setup`); switch to `local` to run the
     # in-process loop instead.
     random_ensemble:
-      # Restored to true 2026-08-16. It was set false for an isolation A/B against
-      # the bag-ON run (THU, 67 factors, 740 weeks: lightgbm IR 1.295 / ensemble
-      # 1.334), but that run was stopped at 8 of ~62 retrains, so the A/B has NO
-      # result — whether the bag helps on this fork is still unknown.
+      # SETTLED 2026-08-17. The isolation A/B finished both arms over the same
+      # 740 weeks (THU, 67 factors) and the bag WON on the member it changes:
       #
-      # true is nonetheless the right default: it matches the artifacts published
-      # on the Space, and it is the only setting with any supporting evidence
-      # (the sentiment fork's 0.509 -> 0.983). Treat that evidence as weak here —
-      # there LightGBM was the WEAKEST member with room to improve, whereas on
-      # this fork it is already among the strongest.
+      #                    bag ON    bag OFF
+      #   lightgbm IR       1.295      0.931    <- the result
+      #   ensemble IR       1.334      1.286
+      #   xgboost IR        1.382      1.382    <- control, bit-identical
+      #   random_forest IR  1.192      1.192    <- control, bit-identical
+      #   max drawdown     -7.77%     -8.67%
       #
-      # TEMPORARILY false 2026-08-16: resuming the isolation A/B's control arm.
-      # This MUST stay false for the resume to work — the fingerprint covers member
-      # hyperparameters, so flipping it to true would invalidate the 8 completed
-      # bag-OFF bundles and silently restart as a bag-ON run instead of resuming.
-      # Set back to true (or to whichever arm wins) once the A/B reports.
-      enabled: false
+      # The identical xgb/rf figures are what make this trustworthy: LightGBM is
+      # provably the only thing that moved. Quote the member lift (+39%), not the
+      # ensemble delta (+0.048) — rank_mean averages a one-member gain across
+      # three, and +0.048 on one backtest path is inside the noise floor (xgboost
+      # moved +0.67 between runs with no changes to it).
+      #
+      # Do NOT flip this to false again without reading CLAUDE.md "LightGBM bag
+      # A/B". The control arm costs ~7h to reproduce, and because the fingerprint
+      # covers member hyperparameters, flipping it invalidates every cached bundle
+      # rather than reusing the other arm's fits.
+      enabled: true
       backend: modal           # modal (fan out across CPU containers) | local
       n_workers: 10            # modal: number of parallel CPU containers
       n_candidates: 200
