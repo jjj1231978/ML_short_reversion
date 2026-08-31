@@ -17,6 +17,8 @@ Usage:
     python -m src.predict --top-n 10              # how many names per side (default 10)
     python -m src.predict --config default        # which config to load
     python -m src.predict --output /path/to.parquet
+    # Friday cross-section scored with the maintained Thursday model:
+    python -m src.predict --signal-day FRI --model-signal-day THU
 
 Lifecycle vs `src.main`:
   - `python -m src.main` runs the full historical backtest end-to-end and
@@ -591,9 +593,36 @@ def main(argv: list[str] | None = None) -> int:
                              "directory (data/processed/forecasts/{day}/). Other "
                              "days remain runnable for research, but are not "
                              "maintained.")
+    parser.add_argument("--model-signal-day", default=None,
+                        choices=["MON", "TUE", "WED", "THU", "FRI"],
+                        help="Bundle namespace to SCORE with, when it differs from "
+                             "--signal-day. Defaults to --signal-day. Use this to "
+                             "score a different weekday's cross-section with the "
+                             "maintained model: `--signal-day FRI "
+                             "--model-signal-day THU` bins features on Friday "
+                             "closes but predicts with the Thursday-trained "
+                             "ensemble. Retraining is refused whenever the two "
+                             "differ, so the borrowed namespace is never written "
+                             "to with off-day fits.")
     args = parser.parse_args(argv)
 
     signal_day = args.signal_day.upper()
+    model_signal_day = (args.model_signal_day or signal_day).upper()
+    borrowed_model = model_signal_day != signal_day
+    if borrowed_model:
+        if args.force_retrain:
+            parser.error(
+                "--force-retrain is incompatible with --model-signal-day: refitting "
+                f"on {signal_day} bins would overwrite the {model_signal_day} bundle "
+                f"namespace with off-day fits. Retrain with --signal-day "
+                f"{model_signal_day} instead."
+            )
+        log.warning(
+            "Scoring %s-binned features with the %s-trained bundle. The horizon is "
+            "the same length (one weekly bin), but the model has never seen a "
+            "%s cross-section; no retrain will be performed.",
+            signal_day, model_signal_day, signal_day,
+        )
     cfg = load_config(args.config)
     today = pd.Timestamp(datetime.now().date())
     log.info(
@@ -651,9 +680,28 @@ def main(argv: list[str] | None = None) -> int:
     retrain_freq = cfg["model"]["retrain_freq"]
     bundle = None
     if not args.force_retrain:
-        bundle = load_latest_bundle(signal_day)
+        bundle = load_latest_bundle(model_signal_day)
 
-    do_retrain = args.force_retrain or bundle is None or needs_retrain(latest_wed, retrain_freq, signal_day)
+    do_retrain = (
+        args.force_retrain
+        or bundle is None
+        or needs_retrain(latest_wed, retrain_freq, model_signal_day)
+    )
+    if borrowed_model and do_retrain:
+        if bundle is None:
+            log.error(
+                f"No persisted bundle under {model_signal_day} and retraining is "
+                f"refused while --model-signal-day is set. Run `python -m src.predict "
+                f"--signal-day {model_signal_day}` first to fit that namespace."
+            )
+            return 3
+        if needs_retrain(latest_wed, retrain_freq, model_signal_day):
+            log.warning(
+                f"{model_signal_day} bundle {bundle['retrain_date']} is past its "
+                f"{retrain_freq}-week cadence, but a borrowed namespace is never "
+                "refit from here; scoring with it as-is."
+            )
+        do_retrain = False
     if args.no_retrain and do_retrain:
         if bundle is None:
             log.error("No persisted bundle and --no-retrain set. "
@@ -778,6 +826,10 @@ def main(argv: list[str] | None = None) -> int:
         if "region" in full.columns else target_wed
     )
     full["signal_day"] = signal_day
+    # Namespace the scoring bundle came from. Equals signal_day on a normal run;
+    # differs when --model-signal-day borrows the maintained model to score
+    # another weekday's cross-section.
+    full["model_signal_day"] = model_signal_day
     full["bundle_retrain_date"] = bundle_retrain_date  # model vintage / provenance
     # Rank within (region, eligible-only): 1 = top long, N = bottom short. NaN
     # for ineligible rows.
@@ -822,6 +874,8 @@ def main(argv: list[str] | None = None) -> int:
     weekday_name = WEEKDAY_INDEX_TO_NAME[WEEKDAY_CODE_TO_INDEX[signal_day]]
     print("\n" + "=" * 78)
     print(f"FORECAST  {weekday_name}  as-of {latest_wed.date()}  →  target {target_wed.date()}")
+    if borrowed_model:
+        print(f"  model namespace: {model_signal_day} (borrowed — features binned on {signal_day})")
     print(f"  bundle retrain_date: "
           f"{(bundle['retrain_date'] if bundle and not do_retrain else latest_wed.strftime('%Y-%m-%d'))}"
           f"  members: {members}  combine: {combine_method}")
