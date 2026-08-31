@@ -23,6 +23,16 @@ SPACE_URL="https://huggingface.co/spaces/JJ-JIN12345/ml-short-reversion"
 HF_USER="JJ-JIN12345"
 WT="$(mktemp -d)/hfdeploy"
 
+# Interpreter for the syntax gate below. A bare `python` does not exist on a
+# plain shell (only inside an activated venv), so deploying without activating
+# first died at the version check with "python: command not found". Prefer the
+# repo venv, then python3, then python.
+if [ -x .venv/bin/python ]; then   PY=.venv/bin/python
+elif command -v python3 >/dev/null 2>&1; then PY=python3
+elif command -v python  >/dev/null 2>&1; then PY=python
+else echo "ERROR: no python interpreter found (tried .venv/bin/python, python3, python)" >&2; exit 1
+fi
+
 DO_COMMIT=0
 SKIP_SYNTAX=0
 for arg in "$@"; do
@@ -56,7 +66,7 @@ fi
 # The tree is clean by the check above, so the working copy == what gets pushed.
 if [ "$SKIP_SYNTAX" = "0" ]; then
     PYVER=$(grep -oP '^FROM python:\K[0-9]+\.[0-9]+' Dockerfile)
-    LOCALVER=$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+    LOCALVER=$("$PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])')
     CHECK='
 import ast, pathlib, sys
 bad = []
@@ -71,7 +81,7 @@ if bad:
     raise SystemExit(1)
 '
     if [ "$LOCALVER" = "$PYVER" ]; then
-        python -c "$CHECK"
+        "$PY" -c "$CHECK"
     elif command -v docker >/dev/null 2>&1; then
         docker run --rm -v "$PWD":/w -w /w "python:$PYVER-slim" python -c "$CHECK"
     else
