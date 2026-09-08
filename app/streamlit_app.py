@@ -59,5 +59,46 @@ pages = [
     st.Page(PAGES_DIR / "10_deep_dive.py", title="Deep dive", icon=":material/travel_explore:"),
 ]
 
+# Placement matters twice over. It must come BEFORE `st.navigation(...)`:
+# anything the entry script emits after `nav.run()` is discarded, because the
+# page script has already owned and closed the main container by then (verified
+# -- a plain `st.sidebar.caption` placed after `nav.run()` never reaches the
+# DOM). And it goes on the sidebar rather than the main area, because the
+# sidebar is the container the entry script keeps across page runs. A <style>
+# tag applies to the whole document wherever it lives, so the sidebar is a fine
+# host for it.
+st.sidebar.markdown(
+    """
+    <style>
+    section[data-testid="stMain"] { scrollbar-gutter: stable; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 nav = st.navigation(pages)
 nav.run()
+
+# Reserve the scrollbar gutter on the main scroll container.
+#
+# Without this, `section[data-testid="stMain"]` computes `scrollbar-gutter: auto`,
+# so the vertical scrollbar occupies width only while it is visible. Any layout
+# change that toggles the scrollbar therefore also changes the content width by
+# the scrollbar's width (~15px on Windows/Linux; 0 on overlay-scrollbar systems
+# such as macOS and headless Chromium).
+#
+# That is a feedback loop: content width shrinks -> a wrapping text block gains a
+# line -> the page grows taller -> the scrollbar stays -> ... and at a width where
+# a block sits exactly on a wrap boundary it oscillates, which reads as flickering
+# text. The SHAP page caption is the block that hits it first: it wraps from 3 to
+# 4 lines at ~1385px viewport width, so a window near that width flickers while a
+# narrower or wider one is stable.
+#
+# `stable` always reserves the gutter, so the content width no longer depends on
+# whether the scrollbar is showing and the loop cannot start. Applied globally
+# rather than on the SHAP page alone -- any page can land on a wrap boundary, and
+# a constant gutter also stops the 15px content shift when navigating between a
+# page that scrolls and one that does not.
+#
+# Note this is invisible on macOS and in headless browsers, where the scrollbar
+# already takes zero width.
