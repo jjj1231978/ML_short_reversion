@@ -26,6 +26,12 @@ from src.config import PROCESSED_DIR
 from src.research.deepdive import artifact_path, load_artifact
 from src.research.technicals import series_to_frame
 
+PUBLIC_BUILD_NOTE = (
+    "The live signal book is not published with this repo — see "
+    "*What is and isn't published* in the README. Run the pipeline "
+    "locally to populate this page."
+)
+
 DASH = "—"
 
 
@@ -116,7 +122,8 @@ with st.sidebar:
 
 if target is None:
     st.warning(
-        f"No deep-dive research found for {sd_label}.\n\nGenerate it with:\n\n"
+        f"No deep-dive research found for {sd_label}.\n\n"
+        f"{PUBLIC_BUILD_NOTE}\n\nGenerate it with:\n\n"
         f"```\npython -m src.research deepdive --signal-day {sd_code}\n```"
     )
     st.stop()

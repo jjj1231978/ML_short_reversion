@@ -24,6 +24,12 @@ from src.backtest.return_calibration import (
 )
 from src.config import PROCESSED_DIR
 
+PUBLIC_BUILD_NOTE = (
+    "The live signal book is not published with this repo — see "
+    "*What is and isn't published* in the README. Run the pipeline "
+    "locally to populate this page."
+)
+
 st.title("Live forecast")
 st.caption(
     "Top-10 long and top-10 short picks for the next rebalance close. "
@@ -54,6 +60,7 @@ with st.sidebar:
     if not files:
         st.warning(
             f"No forecasts found for {sd_label}.\n\n"
+            f"{PUBLIC_BUILD_NOTE}\n\n"
             f"Generate one with:\n\n"
             f"```\npython -m src.predict --signal-day {sd_code}\n```"
         )

@@ -30,26 +30,24 @@ data/processed/*
 !data/processed/shap_values_lightgbm.parquet
 !data/processed/shap_values_random_forest.parquet
 !data/processed/weekday_effect.parquet
-# Per-signal-day track record. Easy to miss when auditing which artifacts the
-# app reads: page 09 builds this filename with an f-string
-# (forecast_track_record_{code}.parquet), so it does not show up in a grep for
-# literal artifact names. Omitting it renders the Track record page empty.
-!data/processed/forecast_track_record_WED.parquet
-!data/processed/forecast_track_record_THU.parquet
-!data/processed/forecast_track_record_FRI.parquet
-!data/processed/forecast_picks.db
-!data/processed/live_trackrecord.db
-!data/processed/forecasts/
-!data/processed/forecasts/**
+# NOT whitelisted, deliberately: the live signal book. The repo and the Space
+# are public, so the current long/short picks, the picks ledger and the per-name
+# deep-dive dossiers stay local-only. Publishing them would hand over a
+# tradeable signal, and a public URL is scrapeable even if later deleted.
+#   forecasts/                      live per-week picks
+#   deepdive/                       per-name research over those picks
+#   forecast_picks.db               picks ledger
+#   live_trackrecord.db             realized performance of published picks
+#   forecast_track_record_*.parquet per-signal-day track record
+# The Live forecast / Track record / Deep dive pages degrade to an empty state
+# that tells the reader which command regenerates each artifact locally.
 !data/processed/reports/
 !data/processed/reports/**
-!data/processed/deepdive/
-!data/processed/deepdive/**
-# ...but not the fact sheet packs: they are a working intermediate handed to the
-# session that writes the briefs, the Space never renders them, and their content
-# is already in the .json alongside. Last matching pattern wins, so this must
-# follow the negations above.
-data/processed/deepdive/**/*.factsheets.md
+# ...except the research pack. It is the agents' working input, not a viewer
+# artifact (no app page reads it), and it embeds ~94 KB of the verbatim source
+# paper -- third-party research that this repo has no right to redistribute.
+# run_report.py still writes it locally on every run.
+data/processed/reports/**/research_pack.json
 
 # Python
 __pycache__/

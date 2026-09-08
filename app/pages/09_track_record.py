@@ -16,6 +16,12 @@ import streamlit as st
 from src.backtest.live_trackrecord import load_commentary, load_performance
 from src.config import PROCESSED_DIR
 
+PUBLIC_BUILD_NOTE = (
+    "The live signal book is not published with this repo — see "
+    "*What is and isn't published* in the README. Run the pipeline "
+    "locally to populate this page."
+)
+
 SIGNAL_DAY_LABELS = {"WED": "Wednesday", "THU": "Thursday", "FRI": "Friday"}
 REGION_ORDER = ["ALL", "US", "UK", "CA"]
 REGION_COLOR = {
@@ -68,6 +74,7 @@ track_path = PROCESSED_DIR / f"forecast_track_record_{sd_code}.parquet"
 if not track_path.exists():
     st.warning(
         f"No track record file for {sd_label}.\n\n"
+        f"{PUBLIC_BUILD_NOTE}\n\n"
         f"Generate one with:\n\n"
         f"```\npython -m src.backtest.forecast_track_record --signal-day {sd_code}\n```"
     )

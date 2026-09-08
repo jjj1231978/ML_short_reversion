@@ -16,9 +16,9 @@ replicating and extending `ML_Mean_Reversion.pdf`. Predicts forward 1-week stock
 returns from a cross-sectionally neutralized factor panel using an ensemble of
 XGBoost, LightGBM, and RandomForest, with SHAP attribution per member.
 
-> **Private Space.** This app surfaces live long/short positions and the full
-> factor model. It is deliberately not public — see "Visibility" below before
-> changing that.
+> **Public build.** The code, the backtest, and the full SHAP attribution are
+> here. The *live signal book* is not — current picks, the picks ledger and the
+> per-name research are kept local. See "What is and isn't published" below.
 
 ## What the pages show
 
@@ -31,8 +31,12 @@ XGBoost, LightGBM, and RandomForest, with SHAP attribution per member.
 | Weekday effect | IR by signal weekday (Mon-Fri) |
 | Parameter explorer | Backtest sensitivity to config knobs |
 | Report | Multi-agent research note (briefing → critique → synthesis) |
-| Live forecast | Next-rebalance long/short picks (signal day **THU**) |
-| Track record | Realized performance of past published picks |
+| Live forecast | Next-rebalance long/short picks — *empty in the public build* |
+| Track record | Realized performance of past picks — *empty in the public build* |
+| Deep dive | Per-name fundamentals / news / technicals — *empty in the public build* |
+
+The last three read the live signal book, which is not published. Each page
+renders an empty state naming the command that regenerates it locally.
 
 ## Current run
 
@@ -93,9 +97,14 @@ omits torch / shap / lightgbm / xgboost / modal, none of which the app imports.
 The Space is a git remote; there is no CI in between:
 
 ```bash
-git push origin macro-fmp-premium-fix   # GitHub (private, source of truth)
-git push hf HEAD:main                   # Hugging Face Space (private, runtime)
+git push origin master   # GitHub (public, source of truth)
+./deploy_hf.sh           # Hugging Face Space (public, runtime)
 ```
+
+Use `deploy_hf.sh` rather than pushing to `hf` directly: it builds a single-commit
+orphan branch in a throwaway worktree with every binary forced through LFS, which
+is what the Hub's pre-receive hook requires. It also means **the Space carries no
+git history**, so nothing that was ever committed here is recoverable from it.
 
 **No secrets are required.** The Space is a pure viewer over the committed
 artifacts and makes no outbound API calls: the only fetching code path
@@ -103,12 +112,41 @@ artifacts and makes no outbound API calls: the only fetching code path
 imports `fetch_price_data` inside the function, so nothing network-related is
 even loaded. Refreshing data and retraining happen locally, not on the Space.
 
-## Visibility
+## What is and isn't published
 
-Both the GitHub repo and this Space are **private**. The app exposes current
-positions, per-name SHAP rationale, and the live track record. Making it public
-publishes the signal, and a public Space URL can be indexed and scraped even if
-later deleted.
+Both the GitHub repo and the Space are **public**. The split is deliberate.
+
+**Published** — everything needed to audit or reproduce the research: all source,
+configs and tests; the 740-week backtest outputs (`portfolio_returns`,
+`predictions`, `alpha_decay`, `weekday_effect`, calibration); full SHAP values and
+features per ensemble member; and the multi-agent report prose.
+
+**Not published** — the live signal book, kept out by `.gitignore` and absent from
+git history:
+
+| Path | Why |
+|---|---|
+| `data/processed/forecasts/` | current long/short picks — a tradeable signal |
+| `data/processed/deepdive/` | per-name research over those picks |
+| `data/processed/forecast_picks.db` | picks ledger |
+| `data/processed/live_trackrecord.db` | realized performance of published picks |
+| `data/processed/forecast_track_record_*.parquet` | per-signal-day track record |
+| `data/processed/orders_*.csv`, `paper_positions_*.csv` | the live trading book |
+| `data/processed/reports/**/research_pack.json` | embeds the source paper verbatim |
+
+`predictions.parquet` ends at the last backtest week (2026-08-20). On a 1-week
+holding horizon that ranking has long since expired, which is why it ships.
+
+**The source paper is not redistributed.** `ML_Mean_Reversion.pdf` is third-party
+research and has never been committed. The report pipeline reads it locally and
+writes it into `research_pack.json`, which is why that file is excluded.
+
+## Disclaimer
+
+Research code, published for review. Nothing here is investment advice, and the
+backtest is not a claim about future returns — it carries the usual caveats
+(survivorship bias in the UK/CA snapshot universes, a cost model rather than
+real fills, and the noise floor documented above).
 
 ## License
 
